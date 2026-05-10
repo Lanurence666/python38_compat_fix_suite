@@ -3979,6 +3979,23 @@ def fix_cached_property_import(content):
     return '\n'.join(lines)
 
 
+def fix_regex_flag_merge(content):
+    if 're.' not in content:
+        return content
+    if '{**re.' not in content:
+        return content
+
+    pattern = r'\{(\*\*re\.\w+\s*,\s*)+\*\*re\.\w+\s*\}'
+
+    def _replace_flag_merge(m):
+        full = m.group(0)
+        flags = re.findall(r're\.\w+', full)
+        return ' | '.join(flags)
+
+    content = re.sub(pattern, _replace_flag_merge, content)
+    return content
+
+
 def fix_types_py39_aliases(content, filepath=""):
     basename = os.path.basename(filepath)
     if basename != '__init__.py':
@@ -4126,6 +4143,11 @@ def _fix_dict_merge_line_improved(line):
         r'\bdown\b',
         r'\beither\b',
         r'\bworking\b',
+        r"[\"'][|<>=!][a-zA-Z]\w*[\"']",
+        r'dtype\s*=',
+        r'ddtype\s*=',
+        r'ndtype\s*=',
+        r'datatype\s*=',
     ]
 
     for pat in numpy_or_patterns:
@@ -4458,6 +4480,7 @@ def process_file(filepath):
     content = fix_dbm_sqlite3(content)
     content = fix_lru_cached_property(content)
     content = fix_cached_property_import(content)
+    content = fix_regex_flag_merge(content)
     content = fix_types_py39_aliases(content, filepath)
     content = fix_array_api_compat_typing(content)
     content = fix_duplicate_imports(content)
@@ -4627,6 +4650,7 @@ def main():
         (r"\bsentinel\s*\(", "sentinel() (3.15+)"),
         (r"^from profiling[. ]", "profiling module (3.15+)"),
         (r"\bdbm\.sqlite3\b", "dbm.sqlite3 (3.15+)"),
+        (r"\{\\*\\*re\\.\\w+", "re flag merge {**re.X, **re.Y} (3.11+)"),
     ]
 
     for pattern, desc in checks:

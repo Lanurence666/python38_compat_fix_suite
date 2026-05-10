@@ -1596,6 +1596,26 @@ def _fix_dict_inplace_merge_line(line):
     if var_name in skip_names:
         return line, False
 
+    numpy_array_patterns = [
+        r'_mask\b', r'\bmask\b', r'\boutmask\b', r'\bcurrent_mask\b',
+        r'\baf\b', r'\bbf\b', r'\bm\b(?!\.)',
+        r'\.mask$', r'\._mask$',
+    ]
+    for pat in numpy_array_patterns:
+        if re.search(pat, var_name):
+            return line, False
+
+    numpy_context_patterns = [
+        r'\bnp\.\w+', r'\bnumpy\.\w+', r'\bma\.\w+',
+        r'\bgetmask\b', r'\bgetmaskarray\b',
+        r'\bisfinite\b', r'\bisinf\b', r'\bisnan\b',
+        r'\bnomask\b', r'\bMaskedArray\b',
+        r'\blogical_or\b', r'\blogical_and\b', r'\blogical_not\b',
+    ]
+    for pat in numpy_context_patterns:
+        if re.search(pat, line):
+            return line, False
+
     if _is_in_string(line, m.start()):
         return line, False
 

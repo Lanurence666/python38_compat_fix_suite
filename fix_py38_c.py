@@ -394,16 +394,90 @@ def _load_embedded_compat_h():
                 insert_pos = pos
                 break
         if insert_pos >= 0:
-            _EMBEDDED_PYTHONCAPI_COMPAT_H = upstream[:insert_pos] + EXTRA_COMPAT_IMPLEMENTATIONS + "\n" + upstream[insert_pos:]
+            combined = upstream[:insert_pos] + EXTRA_COMPAT_IMPLEMENTATIONS + "\n" + upstream[insert_pos:]
         else:
             cpp_end = upstream.rfind("#ifdef __cplusplus")
             if cpp_end >= 0:
-                _EMBEDDED_PYTHONCAPI_COMPAT_H = upstream[:cpp_end] + EXTRA_COMPAT_IMPLEMENTATIONS + "\n" + upstream[cpp_end:]
+                combined = upstream[:cpp_end] + EXTRA_COMPAT_IMPLEMENTATIONS + "\n" + upstream[cpp_end:]
             else:
-                _EMBEDDED_PYTHONCAPI_COMPAT_H = upstream + EXTRA_COMPAT_IMPLEMENTATIONS
+                combined = upstream + EXTRA_COMPAT_IMPLEMENTATIONS
     else:
-        _EMBEDDED_PYTHONCAPI_COMPAT_H = _get_minimal_compat_h()
+        combined = _get_minimal_compat_h()
+
+    combined = _add_per_function_guards_to_compat_h(combined)
+    _EMBEDDED_PYTHONCAPI_COMPAT_H = combined
     return _EMBEDDED_PYTHONCAPI_COMPAT_H
+
+
+def _add_per_function_guards_to_compat_h(content):
+    if 'static inline' not in content:
+        return content
+
+    existing_guards = set()
+    for m in re.finditer(r'#ifndef\s+_PYCAPI_COMPAT_(\w+)\b', content):
+        existing_guards.add(m.group(1))
+
+    lines = content.split('\n')
+    new_lines = []
+    i = 0
+    modified = False
+
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+
+        m = re.match(r'^static inline\s+[\w\s\*]+?\s+(Py\w+)\s*\(', line)
+        if not m:
+            m2 = re.match(r'^static inline\s+[\w\s\*]+?\s+(_Py\w+)\s*\(', line)
+            if m2:
+                m = m2
+        if not m:
+            new_lines.append(line)
+            i += 1
+            continue
+
+        func_name = m.group(1)
+        guard_name = f'_PYCAPI_COMPAT_{func_name}'
+
+        if guard_name in existing_guards:
+            new_lines.append(line)
+            i += 1
+            continue
+
+        func_lines = [line]
+        brace_depth = 0
+        found_open = False
+        j = i + 1
+        while j < len(lines):
+            func_lines.append(lines[j])
+            for ch in lines[j]:
+                if ch == '{':
+                    brace_depth += 1
+                    found_open = True
+                elif ch == '}':
+                    brace_depth -= 1
+            if found_open and brace_depth <= 0:
+                break
+            j += 1
+
+        end_idx = j
+        while end_idx + 1 < len(lines) and lines[end_idx + 1].strip() == '':
+            end_idx += 1
+
+        new_lines.append(f'#ifndef {guard_name}')
+        new_lines.append(f'#define {guard_name}')
+        for fl in func_lines:
+            new_lines.append(fl)
+        new_lines.append(f'#endif /* {guard_name} */')
+        new_lines.append('')
+
+        existing_guards.add(guard_name)
+        modified = True
+        i = end_idx + 1
+
+    if modified:
+        return '\n'.join(new_lines)
+    return content
 
 
 def _get_minimal_compat_h():
@@ -1737,6 +1811,80 @@ def fix_pythoncapi_compat_static_conflicts(content):
         if not replaced:
             new_lines.append(line)
             i += 1
+
+    if modified:
+        content = '\n'.join(new_lines)
+
+    content = _add_per_function_guards(content)
+
+    return content
+
+
+def _add_per_function_guards(content):
+    if 'static inline' not in content:
+        return content
+    if 'PYTHONCAPI_COMPAT' not in content:
+        return content
+
+    guarded_funcs = set()
+    for m in re.finditer(r'#ifndef\s+_PYCAPI_COMPAT_(\w+)\b', content):
+        guarded_funcs.add(m.group(1))
+
+    lines = content.split('\n')
+    new_lines = []
+    i = 0
+    modified = False
+
+    while i < len(lines):
+        line = lines[i]
+        m = re.match(r'^static inline\s+[\w\s\*]+?\s+(Py\w+)\s*\(', line)
+        if not m:
+            m2 = re.match(r'^static inline\s+[\w\s\*]+?\s+(_Py\w+)\s*\(', line)
+            if m2:
+                m = m2
+        if not m:
+            new_lines.append(line)
+            i += 1
+            continue
+
+        func_name = m.group(1)
+        guard_name = f'_PYCAPI_COMPAT_{func_name}'
+
+        if guard_name in guarded_funcs:
+            new_lines.append(line)
+            i += 1
+            continue
+
+        func_lines = [line]
+        brace_depth = 0
+        found_open = False
+        j = i + 1
+        while j < len(lines):
+            func_lines.append(lines[j])
+            for ch in lines[j]:
+                if ch == '{':
+                    brace_depth += 1
+                    found_open = True
+                elif ch == '}':
+                    brace_depth -= 1
+            if found_open and brace_depth <= 0:
+                break
+            j += 1
+
+        end_idx = j
+        while end_idx + 1 < len(lines) and lines[end_idx + 1].strip() == '':
+            end_idx += 1
+
+        new_lines.append(f'#ifndef {guard_name}')
+        new_lines.append(f'#define {guard_name}')
+        for fl in func_lines:
+            new_lines.append(fl)
+        new_lines.append(f'#endif /* {guard_name} */')
+        new_lines.append('')
+
+        guarded_funcs.add(guard_name)
+        modified = True
+        i = end_idx + 1
 
     if modified:
         return '\n'.join(new_lines)

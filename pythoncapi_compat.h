@@ -1,3 +1,4 @@
+
 // Header file providing new C API functions to old Python versions.
 //
 // File distributed under the Zero Clause BSD (0BSD) license.
@@ -25,6 +26,62 @@ extern "C" {
 #if PY_VERSION_HEX < 0x030b00B4 && !defined(PYPY_VERSION)
 #  include "frameobject.h"        // PyFrameObject, PyFrame_GetBack()
 #endif
+
+// ===== Extra compat implementations for Python 3.8 =====
+// These are NOT in the upstream pythoncapi_compat.h but are needed
+// for projects that depend on Python 3.9+ APIs when building on 3.8.
+
+#ifndef _PYCAPI_COMPAT_PyType_GetModuleByDef
+#define _PYCAPI_COMPAT_PyType_GetModuleByDef
+#if PY_VERSION_HEX < 0x030900A0
+static inline PyObject* PyType_GetModuleByDef(PyTypeObject *type, PyModuleDef *def)
+{
+    PyErr_SetString(PyExc_RuntimeError, "PyType_GetModuleByDef is not available in Python 3.8");
+    return NULL;
+}
+#endif
+#endif /* _PYCAPI_COMPAT_PyType_GetModuleByDef */
+
+#ifndef _PYCAPI_COMPAT_PyType_GetModule
+#define _PYCAPI_COMPAT_PyType_GetModule
+#if PY_VERSION_HEX < 0x030900A0
+static inline PyObject* PyType_GetModule(PyTypeObject *type)
+{
+    if (type == NULL) {
+        PyErr_SetString(PyExc_TypeError, "PyType_GetModule: type is NULL");
+        return NULL;
+    }
+    PyObject *mro = type->tp_mro;
+    if (mro == NULL || !PyTuple_Check(mro)) {
+        PyErr_SetString(PyExc_TypeError, "PyType_GetModule: type has no MRO");
+        return NULL;
+    }
+    Py_ssize_t n = PyTuple_GET_SIZE(mro);
+    for (Py_ssize_t i = 0; i < n; i++) {
+        PyObject *base = PyTuple_GET_ITEM(mro, i);
+        if (!PyType_Check(base)) continue;
+        PyTypeObject *base_type = (PyTypeObject*)base;
+        if (base_type->tp_dict == NULL) continue;
+        PyObject *module_name = PyDict_GetItemString(base_type->tp_dict, "__module__");
+        if (module_name == NULL || !PyUnicode_Check(module_name)) continue;
+        PyObject *module = PyImport_GetModule(module_name);
+        if (module != NULL) {
+            return module;
+        }
+        module = PyImport_ImportModuleLevel(
+            PyUnicode_AsUTF8(module_name), NULL, NULL, NULL, 0);
+        if (module != NULL) {
+            return module;
+        }
+        PyErr_Clear();
+    }
+    PyErr_SetString(PyExc_AttributeError, "PyType_GetModule: type has no module");
+    return NULL;
+}
+#endif
+#endif /* _PYCAPI_COMPAT_PyType_GetModule */
+
+// ===== End extra compat implementations =====
 
 
 #ifndef _Py_CAST
@@ -2711,4 +2768,325 @@ PyUnstable_SetImmortal(PyObject *op)
 #ifdef __cplusplus
 }
 #endif
+
+
+// ===== 以下兼容实现不在上游 pythoncapi_compat.h 中，由 fix_py38_c.py 追加 =====
+
+// PyObject_VectorcallDict() - Python 3.12.0a5
+#if PY_VERSION_HEX < 0x030C00A5
+static inline PyObject*
+PyObject_VectorcallDict(PyObject *callable, PyObject *const *args,
+                        size_t nargsf, PyObject *kwdict)
+{
+    Py_ssize_t nargs = (Py_ssize_t)PyVectorcall_NARGS(nargsf);
+    PyObject *tuple = PyTuple_New(nargs);
+    if (tuple == NULL) {
+        return NULL;
+    }
+    for (Py_ssize_t i = 0; i < nargs; i++) {
+        PyTuple_SET_ITEM(tuple, i, Py_NewRef(args[i]));
+    }
+    PyObject *result = PyObject_Call(callable, tuple, kwdict);
+    Py_DECREF(tuple);
+    return result;
+}
+#endif
+
+// PyObject_VectorcallMethod() - Python 3.12.0a5
+#if PY_VERSION_HEX < 0x030C00A5
+static inline PyObject*
+PyObject_VectorcallMethod(PyObject *name, PyObject *const *args,
+                          size_t nargsf, PyObject *kwnames)
+{
+    PyObject *callable = PyObject_GetAttr(args[0], name);
+    if (callable == NULL) {
+        return NULL;
+    }
+    PyObject *result = PyObject_Vectorcall(callable, &args[1],
+                                           nargsf - 1, kwnames);
+    Py_DECREF(callable);
+    return result;
+}
+#endif
+
+// PyErr_GetRaisedException() / PyErr_SetRaisedException() - Python 3.12.0a1
+#if PY_VERSION_HEX < 0x030C00A1
+static inline PyObject* PyErr_GetRaisedException(void)
+{
+    PyObject *exc_type, *exc_value, *exc_tb;
+    PyErr_Fetch(&exc_type, &exc_value, &exc_tb);
+    PyErr_NormalizeException(&exc_type, &exc_value, &exc_tb);
+    Py_XDECREF(exc_type);
+    Py_XDECREF(exc_tb);
+    return exc_value;
+}
+
+static inline int PyErr_SetRaisedException(PyObject *exc)
+{
+    PyErr_SetObject((PyObject*)Py_TYPE(exc), exc);
+    Py_DECREF(exc);
+    return 0;
+}
+#endif
+
+// PyType_GetSlot() - Python 3.9.0a2
+// Python 3.8 already provides PyType_GetSlot in object.h, skip redefinition
+#if PY_VERSION_HEX < 0x03080000
+#include <stdint.h>
+static inline void* PyType_GetSlot(PyTypeObject *type, int slot)
+{
+    if (type == NULL || Py_TYPE(type) == NULL) {
+        PyErr_SetString(PyExc_TypeError, "PyType_GetSlot: type is NULL");
+        return NULL;
+    }
+    PyTypeObject *tp = type;
+    while (tp) {
+        switch (slot) {
+            case Py_tp_base: return (void*)tp->tp_base;
+            case Py_tp_bases: return (void*)tp->tp_bases;
+            case Py_tp_mro: return (void*)tp->tp_mro;
+            case Py_tp_dict: return (void*)tp->tp_dict;
+            case Py_tp_name: return (void*)tp->tp_name;
+            case Py_tp_doc: return (void*)tp->tp_doc;
+            case Py_tp_hash: return (void*)tp->tp_hash;
+            case Py_tp_call: return (void*)tp->tp_call;
+            case Py_tp_str: return (void*)tp->tp_str;
+            case Py_tp_getattr: return (void*)tp->tp_getattr;
+            case Py_tp_setattr: return (void*)tp->tp_setattr;
+            case Py_tp_repr: return (void*)tp->tp_repr;
+            case Py_tp_richcompare: return (void*)tp->tp_richcompare;
+            case Py_tp_iter: return (void*)tp->tp_iter;
+            case Py_tp_iternext: return (void*)tp->tp_iternext;
+            case Py_tp_descr_get: return (void*)tp->tp_descr_get;
+            case Py_tp_descr_set: return (void*)tp->tp_descr_set;
+            case Py_tp_init: return (void*)tp->tp_init;
+            case Py_tp_new: return (void*)tp->tp_new;
+            case Py_tp_del: return (void*)tp->tp_del;
+            case Py_tp_alloc: return (void*)tp->tp_alloc;
+            case Py_tp_free: return (void*)tp->tp_free;
+            case Py_tp_getattro: return (void*)tp->tp_getattro;
+            case Py_tp_setattro: return (void*)tp->tp_setattro;
+            case Py_tp_as_number: return (void*)tp->tp_as_number;
+            case Py_tp_as_sequence: return (void*)tp->tp_as_sequence;
+            case Py_tp_as_mapping: return (void*)tp->tp_as_mapping;
+            case Py_tp_flags: return (void*)(uintptr_t)tp->tp_flags;
+            default:
+                break;
+        }
+        tp = tp->tp_base;
+    }
+    return NULL;
+}
+#endif
+
+// PyType_GetModule() - Python 3.9.0a2
+#if PY_VERSION_HEX < 0x030900A2
+static inline PyObject* PyType_GetModule(PyTypeObject *type)
+{
+    if (type == NULL) {
+        PyErr_SetString(PyExc_TypeError, "PyType_GetModule: type is NULL");
+        return NULL;
+    }
+    PyObject *mro = type->tp_mro;
+    if (mro == NULL || !PyTuple_Check(mro)) {
+        PyErr_SetString(PyExc_TypeError, "PyType_GetModule: type has no MRO");
+        return NULL;
+    }
+    Py_ssize_t n = PyTuple_GET_SIZE(mro);
+    for (Py_ssize_t i = 0; i < n; i++) {
+        PyObject *base = PyTuple_GET_ITEM(mro, i);
+        if (!PyType_Check(base)) continue;
+        PyTypeObject *base_type = (PyTypeObject*)base;
+        if (base_type->tp_dict == NULL) continue;
+        PyObject *module_name = PyDict_GetItemString(base_type->tp_dict, "__module__");
+        if (module_name == NULL || !PyUnicode_Check(module_name)) continue;
+        PyObject *module = PyImport_GetModule(module_name);
+        if (module != NULL) {
+            return module;
+        }
+        module = PyImport_ImportModuleLevel(
+            PyUnicode_AsUTF8(module_name), NULL, NULL, NULL, 0);
+        if (module != NULL) {
+            return module;
+        }
+        PyErr_Clear();
+    }
+    PyErr_SetString(PyExc_AttributeError, "PyType_GetModule: type has no module");
+    return NULL;
+}
+#endif
+
+// PyType_GetModuleByDef() - Python 3.9.0a2 (stub)
+#if PY_VERSION_HEX < 0x030900A2
+static inline PyObject* PyType_GetModuleByDef(PyTypeObject *type, PyModuleDef *def)
+{
+    PyErr_SetString(PyExc_RuntimeError, "PyType_GetModuleByDef is not available in Python 3.8");
+    return NULL;
+}
+#endif
+
+// Py_TPFLAGS_HAVE_VECTORCALL - Python 3.9.0a4
+// In Python 3.8, vectorcall is available as _PyObject_Vectorcall (3.8b1),
+// but Py_TPFLAGS_HAVE_VECTORCALL was only added in 3.9.
+#ifndef Py_TPFLAGS_HAVE_VECTORCALL
+#  if PY_VERSION_HEX >= 0x030800B1
+#    define Py_TPFLAGS_HAVE_VECTORCALL (1UL << 11)
+#  else
+#    define Py_TPFLAGS_HAVE_VECTORCALL 0
+#  endif
+#endif
+
+// Py_TPFLAGS_IMMUTABLETYPE - Python 3.10.0a3
+#ifndef Py_TPFLAGS_IMMUTABLETYPE
+#  define Py_TPFLAGS_IMMUTABLETYPE (1UL << 8)
+#endif
+
+// Py_TPFLAGS_MANAGED_DICT and Py_TPFLAGS_MANAGED_WEAKREF - Python 3.12.0a5
+#ifndef Py_TPFLAGS_MANAGED_DICT
+#  define Py_TPFLAGS_MANAGED_DICT 0
+#endif
+#ifndef Py_TPFLAGS_MANAGED_WEAKREF
+#  define Py_TPFLAGS_MANAGED_WEAKREF 0
+#endif
+
+// PyCMethod typedef - Python 3.9.0a1
+// This is a function pointer type used with METH_METHOD.
+// In Python 3.8, METH_METHOD does not exist, so PyCMethod cannot be used.
+// Define it as a no-op stub type to allow compilation.
+#if PY_VERSION_HEX < 0x030900A1 && !defined(PyCMethod)
+typedef PyObject *(*PyCMethod)(PyObject *, PyTypeObject *, PyObject *, PyObject **);
+#endif
+
+// METH_METHOD - Python 3.9.0a1
+// Cannot be simply compat-implemented; code using it needs restructuring.
+// Define as 0 so that method tables using it will be silently ignored.
+#if PY_VERSION_HEX < 0x030900A1 && !defined(METH_METHOD)
+#  define METH_METHOD 0x200
+#endif
+
+// Py_TPFLAGS_HAVE_VECTORCALL_LITERAL - Python 3.12.0
+// This flag indicates that vectorcall is supported using the literal
+// tp_vectorcall_offset rather than Py_TPFLAGS_HAVE_VECTORCALL.
+// Not needed for Python < 3.12, define as 0 for compatibility.
+#ifndef Py_TPFLAGS_HAVE_VECTORCALL_LITERAL
+#  define Py_TPFLAGS_HAVE_VECTORCALL_LITERAL 0
+#endif
+
+// Py_TPFLAGS_DISALLOW_INSTANTIATION - Python 3.10.0b1
+#ifndef Py_TPFLAGS_DISALLOW_INSTANTIATION
+#  define Py_TPFLAGS_DISALLOW_INSTANTIATION (1UL << 7)
+#endif
+
+// Py_TPFLAGS_MAPPING - Python 3.10.0b1
+#ifndef Py_TPFLAGS_MAPPING
+#  define Py_TPFLAGS_MAPPING (1UL << 6)
+#endif
+
+// Py_TPFLAGS_SEQUENCE - Python 3.10.0b1
+#ifndef Py_TPFLAGS_SEQUENCE
+#  define Py_TPFLAGS_SEQUENCE (1UL << 5)
+#endif
+
+// Py_TPFLAGS_LONG_SUBCLASS - Python 3.12.0a4 (removed in 3.14)
+// These type flag bits were removed in Python 3.14 but some code
+// references them. Define as 0 for compatibility.
+#ifndef Py_TPFLAGS_LONG_SUBCLASS
+#  define Py_TPFLAGS_LONG_SUBCLASS 0
+#endif
+#ifndef Py_TPFLAGS_LIST_SUBCLASS
+#  define Py_TPFLAGS_LIST_SUBCLASS 0
+#endif
+#ifndef Py_TPFLAGS_TUPLE_SUBCLASS
+#  define Py_TPFLAGS_TUPLE_SUBCLASS 0
+#endif
+#ifndef Py_TPFLAGS_BYTES_SUBCLASS
+#  define Py_TPFLAGS_BYTES_SUBCLASS 0
+#endif
+#ifndef Py_TPFLAGS_UNICODE_SUBCLASS
+#  define Py_TPFLAGS_UNICODE_SUBCLASS 0
+#endif
+#ifndef Py_TPFLAGS_DICT_SUBCLASS
+#  define Py_TPFLAGS_DICT_SUBCLASS 0
+#endif
+#ifndef Py_TPFLAGS_BASE_EXC_SUBCLASS
+#  define Py_TPFLAGS_BASE_EXC_SUBCLASS 0
+#endif
+#ifndef Py_TPFLAGS_TYPE_SUBCLASS
+#  define Py_TPFLAGS_TYPE_SUBCLASS 0
+#endif
+
+// Py_TPFLAGS_USES_DICT_DESCR - Python 3.12.0a4
+#ifndef Py_TPFLAGS_USES_DICT_DESCR
+#  define Py_TPFLAGS_USES_DICT_DESCR 0
+#endif
+
+// Py_TPFLAGS_HAVE_GC - already exists in 3.8, but ensure it's defined
+#ifndef Py_TPFLAGS_HAVE_GC
+#  define Py_TPFLAGS_HAVE_GC (1UL << 14)
+#endif
+
+// PyObject_GetAIter() - Python 3.10.0a6
+#if PY_VERSION_HEX < 0x030A00A6 && !defined(PYPY_VERSION)
+static inline PyObject* PyObject_GetAIter(PyObject *o)
+{
+    return PyObject_CallMethod(o, "__aiter__", NULL);
+}
+#endif
+
+// PyModule_AddFunctions() - Python 3.9.0a5
+// Python 3.8 already provides PyModule_AddFunctions in modsupport.h, skip redefinition
+#if PY_VERSION_HEX < 0x03080000
+static inline int PyModule_AddFunctions(PyObject *module, PyMethodDef *methods)
+{
+    if (methods == NULL) {
+        return 0;
+    }
+    for (PyMethodDef *def = methods; def->ml_name != NULL; def++) {
+        PyObject *func = PyCFunction_New(def, module);
+        if (func == NULL) {
+            return -1;
+        }
+        if (PyModule_AddObject(module, def->ml_name, func) < 0) {
+            Py_DECREF(func);
+            return -1;
+        }
+    }
+    return 0;
+}
+#endif
+
+// PyInterpreterState_GetDict() - Python 3.12.0a2
+// Python 3.8 already provides PyInterpreterState_GetDict in pystate.h, skip redefinition
+#if PY_VERSION_HEX < 0x03080000 && !defined(PYPY_VERSION)
+static inline PyObject* PyInterpreterState_GetDict(PyInterpreterState *interp)
+{
+    if (interp == NULL) {
+        PyErr_SetString(PyExc_RuntimeError,
+                        "PyInterpreterState_GetDict: interpreter is NULL");
+        return NULL;
+    }
+    PyObject *dict = PyDict_New();
+    return dict;
+}
+#endif
+
+// PyErr_GetExcInfo() / PyErr_SetExcInfo() - Python 3.11.0a1 (internal in 3.8)
+// Python 3.8 already provides these in pyerrors.h, skip redefinition
+#if PY_VERSION_HEX < 0x03080000 && !defined(PYPY_VERSION)
+static inline void PyErr_GetExcInfo(PyObject **type, PyObject **value, PyObject **traceback)
+{
+    PyErr_Fetch(type, value, traceback);
+    PyErr_NormalizeException(type, value, traceback);
+    PyErr_Restore(*type, *value, *traceback);
+    Py_XINCREF(*type);
+    Py_XINCREF(*value);
+    Py_XINCREF(*traceback);
+}
+
+static inline void PyErr_SetExcInfo(PyObject *type, PyObject *value, PyObject *traceback)
+{
+    PyErr_Restore(type, value, traceback);
+}
+#endif
+
 #endif  // PYTHONCAPI_COMPAT

@@ -3717,6 +3717,130 @@ def fix_exception_group(content):
     return '\n'.join(new_lines)
 
 
+def fix_attribute_error_kwargs(content):
+    if 'AttributeError' not in content:
+        return content
+    if not re.search(r'AttributeError\([^)]*,\s*(name|obj)\s*=', content):
+        return content
+
+    lines = content.split('\n')
+    new_lines = []
+    needs_compat_func = False
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+
+        if not re.search(r'AttributeError\(', line):
+            new_lines.append(line)
+            i += 1
+            continue
+
+        if not re.search(r'(name|obj)\s*=', line):
+            m_check = re.search(r'AttributeError\(', line)
+            if m_check:
+                open_parens = line.count('(') - line.count(')')
+                if open_parens > 0:
+                    collected = [line]
+                    j = i + 1
+                    while j < len(lines) and open_parens > 0:
+                        collected.append(lines[j])
+                        open_parens += lines[j].count('(') - lines[j].count(')')
+                        j += 1
+                    full_text = '\n'.join(collected)
+                    if re.search(r',\s*(name|obj)\s*=', full_text):
+                        pass
+                    else:
+                        for cl in collected:
+                            new_lines.append(cl)
+                        i = j
+                        continue
+                else:
+                    new_lines.append(line)
+                    i += 1
+                    continue
+            else:
+                new_lines.append(line)
+                i += 1
+                continue
+
+        raise_m = re.match(r'^(\s*)raise\s+AttributeError\(', line)
+        if not raise_m:
+            new_lines.append(line)
+            i += 1
+            continue
+
+        indent = raise_m.group(1)
+        collected = [line]
+        open_parens = line.count('(') - line.count(')')
+        j = i + 1
+        while j < len(lines) and open_parens > 0:
+            collected.append(lines[j])
+            open_parens += lines[j].count('(') - lines[j].count(')')
+            j += 1
+
+        full_text = '\n'.join(collected)
+        flat_text = ' '.join(l.strip() for l in collected)
+
+        args_m = re.match(r'^(\s*)raise\s+AttributeError\((.+)\)\s*$', flat_text)
+        if not args_m:
+            for cl in collected:
+                new_lines.append(cl)
+            i = j
+            continue
+
+        args_str = args_m.group(2)
+
+        msg_match = re.match(r'^(.+?)(?:,\s*(name|obj)\s*=)', args_str)
+        if not msg_match:
+            for cl in collected:
+                new_lines.append(cl)
+            i = j
+            continue
+
+        msg = msg_match.group(1).strip().rstrip(',').strip()
+
+        name_val = None
+        obj_val = None
+
+        name_match = re.search(r',\s*name\s*=\s*([^,\)]+)', args_str)
+        if name_match:
+            name_val = name_match.group(1).strip()
+
+        obj_match = re.search(r',\s*obj\s*=\s*([^,\)]+)', args_str)
+        if obj_match:
+            obj_val = obj_match.group(1).strip()
+
+        if (name_val is None or name_val == 'None') and (obj_val is None or obj_val == 'None'):
+            new_lines.append(f"{indent}raise AttributeError({msg})")
+            i = j
+            continue
+
+        needs_compat_func = True
+        call_args = [msg]
+        if name_val is not None and name_val != 'None':
+            call_args.append(f"name={name_val}")
+        if obj_val is not None and obj_val != 'None':
+            call_args.append(f"obj={obj_val}")
+        new_lines.append(f"{indent}raise _AttributeError_compat({', '.join(call_args)})")
+        i = j
+
+    if needs_compat_func and '_AttributeError_compat' not in content:
+        compat_code = (
+            "\ndef _AttributeError_compat(msg, name=None, obj=None):\n"
+            "    exc = AttributeError(msg)\n"
+            "    if name is not None:\n"
+            "        exc.name = name\n"
+            "    if obj is not None:\n"
+            "        exc.obj = obj\n"
+            "    return exc\n"
+        )
+        insert_pos = _find_compat_insert_position(new_lines)
+        new_lines.insert(insert_pos, compat_code.rstrip())
+
+    return '\n'.join(new_lines)
+
+
 def fix_add_note(content):
     if ".add_note(" not in content:
         return content
@@ -4474,6 +4598,7 @@ def process_file(filepath):
     content = fix_bisect_key(content)
     content = fix_dataclass_slots(content)
     content = fix_tomllib(content)
+    content = fix_attribute_error_kwargs(content)
     content = fix_add_note(content)
     content = fix_taskgroup(content)
     content = fix_math_exp2_cbrt(content)
@@ -4648,6 +4773,7 @@ def main():
         (r"\bbisect\w*\s*\([^)]*key\s*=", "bisect key= (3.10+)"),
         (r"@(?:dataclasses\.)?dataclass\([^)]*slots\s*=\s*True", "dataclass(slots=True) (3.10+)"),
         (r"\.add_note\(", "BaseException.add_note() (3.11+)"),
+        (r"AttributeError\([^)]*,\s*(name|obj)\s*=", "AttributeError keyword-only args (3.10+)"),
         (r"^\s*import tomllib\b", "tomllib (3.11+)"),
         (r"\bfrom asyncio import.*\bTaskGroup\b", "asyncio.TaskGroup (3.11+)"),
         (r"\bmath\.exp2\(", "math.exp2() (3.11+)"),

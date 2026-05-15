@@ -1198,12 +1198,25 @@ def fix_removeprefix_removesuffix(content):
 
             arg = line[arg_start:arg_end]
 
-            if is_prefix:
-                replacement = f"({obj}[len({arg}):] if {obj}.startswith({arg}) else {obj})"
-            else:
-                replacement = f"({obj}[:-len({arg})] if {arg} and {obj}.endswith({arg}) else {obj})"
+            obj_is_complex = ('(' in obj or ')' in obj or '.removesuffix(' in obj or '.removeprefix(' in obj
+                              or ' if ' in obj or ' else ' in obj)
 
-            line = line[:obj_start] + replacement + line[arg_end + 1:]
+            if obj_is_complex:
+                indent = re.match(r'^(\s*)', line).group(1)
+                _tmp_var = f"_remove{'prefix' if is_prefix else 'suffix'}_obj"
+                tmp_line = f"{indent}{_tmp_var} = {obj}"
+                if is_prefix:
+                    replacement = f"({_tmp_var}[len({arg}):] if {_tmp_var}.startswith({arg}) else {_tmp_var})"
+                else:
+                    replacement = f"({_tmp_var}[:-len({arg})] if {arg} and {_tmp_var}.endswith({arg}) else {_tmp_var})"
+                line = line[:obj_start] + replacement + line[arg_end + 1:]
+                new_lines.append(tmp_line)
+            else:
+                if is_prefix:
+                    replacement = f"({obj}[len({arg}):] if {obj}.startswith({arg}) else {obj})"
+                else:
+                    replacement = f"({obj}[:-len({arg})] if {arg} and {obj}.endswith({arg}) else {obj})"
+                line = line[:obj_start] + replacement + line[arg_end + 1:]
 
         new_lines.append(line)
 
@@ -1214,6 +1227,9 @@ def fix_functools_cache(content):
     if "functools" not in content and "cache" not in content:
         return content
 
+    uses_from_import = bool(re.search(r"from functools import.*\bcache\b", content))
+    uses_module_import = bool(re.search(r"import functools\b", content))
+
     content = re.sub(
         r"from functools import ([^\n]*\b)cache(\b[^\n]*)",
         r"from functools import \1lru_cache\2",
@@ -1221,7 +1237,11 @@ def fix_functools_cache(content):
     )
     content = content.replace("from functools import cache", "from functools import lru_cache")
     content = re.sub(r"@functools\.cache\b(?!\()", "@functools.lru_cache(maxsize=None)", content)
-    content = re.sub(r"@cache\b(?!\()", "@functools.lru_cache(maxsize=None)", content)
+
+    if uses_from_import and not uses_module_import:
+        content = re.sub(r"@cache\b(?!\()", "@lru_cache(maxsize=None)", content)
+    else:
+        content = re.sub(r"@cache\b(?!\()", "@functools.lru_cache(maxsize=None)", content)
 
     return content
 
@@ -1236,7 +1256,10 @@ def fix_importlib_metadata_import(content):
     if re.search(r"try:\s*\n\s*from importlib import metadata", content):
         return content
 
-    if re.search(r"importlib_metadata", content):
+    if re.search(r"^\s*import importlib_metadata", content, re.MULTILINE):
+        return content
+
+    if re.search(r"^\s*from importlib_metadata import", content, re.MULTILINE):
         return content
 
     content = re.sub(
@@ -1307,13 +1330,14 @@ def fix_typing_imports(content):
         return content
 
     PY38_PLUS = set()
+    PY39_PLUS = {"Annotated"}
     PY310_PLUS = {"ParamSpec", "Concatenate", "TypeGuard", "TypeAlias"}
     PY311_PLUS = {"Self", "LiteralString", "assert_never"}
     PY312_PLUS = {"TypeAliasType", "TypeVarTuple", "override"}
     PY313_PLUS = {"ReadOnly", "TypeIs"}
     PY315_PLUS = {"TypeForm", "Disjoint"}
 
-    ALL_NEW = PY310_PLUS | PY311_PLUS | PY312_PLUS | PY313_PLUS | PY315_PLUS
+    ALL_NEW = PY39_PLUS | PY310_PLUS | PY311_PLUS | PY312_PLUS | PY313_PLUS | PY315_PLUS
 
     has_typing_ext = "from typing_extensions import" in content
 
@@ -1956,6 +1980,20 @@ def fix_annotated_import(content):
     if "Annotated" not in content:
         return content
 
+    if re.search(r"from typing_extensions import.*\bAnnotated\b", content):
+        if re.search(r"^from typing import.*\bAnnotated\b", content, re.MULTILINE):
+            new_lines = []
+            for line in content.split('\n'):
+                if re.match(r'^from typing import ', line) and 'Annotated' in line:
+                    items = [x.strip() for x in line.replace('from typing import ', '').split(',')]
+                    items = [x for x in items if x and x != 'Annotated']
+                    if items:
+                        new_lines.append('from typing import ' + ', '.join(items))
+                else:
+                    new_lines.append(line)
+            content = '\n'.join(new_lines)
+        return content
+
     if "from typing import" not in content and "from typing_extensions import" not in content:
         if "import typing" in content:
             content = re.sub(
@@ -1993,7 +2031,9 @@ def fix_annotated_import(content):
     if remaining:
         content = content.replace(old_line, new_line + "\n" + annotated_block, 1)
     else:
-        content = content.replace(old_line, annotated_block, 1)
+        content = content.replace(old_line + "\n", annotated_block + "\n", 1)
+        if old_line in content:
+            content = content.replace(old_line, annotated_block, 1)
 
     return content
 
@@ -4423,12 +4463,27 @@ def fix_duplicate_imports(content):
     seen_import = {}
     lines = content.split('\n')
     new_lines = []
+    in_multiline_import = False
     for line in lines:
+        if in_multiline_import:
+            new_lines.append(line)
+            if ')' in line:
+                in_multiline_import = False
+            continue
+
+        if re.match(r'^\s*from\s+[\w.]+\s+import\s*\(\s*$', line):
+            in_multiline_import = True
+            new_lines.append(line)
+            continue
+
         m = re.match(r'^from\s+([\w.]+)\s+import\s+(.+)$', line)
         if m:
             module = m.group(1)
             items_str = m.group(2)
             items = [x.strip() for x in items_str.split(',') if x.strip()]
+            if any(item.startswith('try:') or item.startswith('except') for item in items):
+                new_lines.append(line)
+                continue
             if module in seen_from:
                 prev_idx = seen_from[module]
                 prev_line = new_lines[prev_idx]
@@ -4529,6 +4584,463 @@ def fix_array_api_compat_typing(content):
     return content
 
 
+def fix_type_alias_union(content):
+    if 'from __future__ import annotations' not in content:
+        return content
+    if '|' not in content:
+        return content
+    if 'TypeAlias' not in content:
+        return content
+
+    needs_union = False
+    lines = content.split('\n')
+    new_lines = []
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith('#'):
+            new_lines.append(line)
+            continue
+
+        m = re.match(r'^(\s*)(\w+)\s*:\s*TypeAlias\s*=\s*(.+)$', line)
+        if m:
+            indent = m.group(1)
+            name = m.group(2)
+            value = m.group(3).rstrip()
+            if '|' in value and not re.search(r're\.\w+\s*\|', value):
+                if not re.search(r'\b0x[0-9a-fA-F]+\s*\|', value):
+                    value = _convert_pipe_to_union(value)
+                    needs_union = True
+            new_lines.append(f'{indent}{name}: TypeAlias = {value}')
+            continue
+
+        new_lines.append(line)
+
+    if needs_union:
+        content = '\n'.join(new_lines)
+        content = _ensure_typing_import(content, 'Union')
+    else:
+        content = '\n'.join(new_lines)
+
+    return content
+
+
+def _convert_pipe_to_union(expr):
+    parts = []
+    depth = 0
+    current = []
+    in_string = False
+    string_char = None
+    i = 0
+    while i < len(expr):
+        ch = expr[i]
+        if in_string:
+            current.append(ch)
+            if ch == '\\' and i + 1 < len(expr):
+                current.append(expr[i + 1])
+                i += 2
+                continue
+            if ch == string_char:
+                in_string = False
+            i += 1
+            continue
+        if ch in ('"', "'"):
+            in_string = True
+            string_char = ch
+            current.append(ch)
+            i += 1
+            continue
+        if ch in '([':
+            depth += 1
+            current.append(ch)
+            i += 1
+            continue
+        if ch in ')]':
+            depth -= 1
+            current.append(ch)
+            i += 1
+            continue
+        if ch == '|' and depth == 0:
+            if i + 1 < len(expr) and expr[i + 1] == '|':
+                current.append('||')
+                i += 2
+                continue
+            parts.append(''.join(current).strip())
+            current = []
+            i += 1
+            continue
+        current.append(ch)
+        i += 1
+    if current:
+        parts.append(''.join(current).strip())
+
+    if len(parts) <= 1:
+        return expr
+
+    return 'Union[' + ', '.join(parts) + ']'
+
+
+def _ensure_typing_import(content, name):
+    m = re.search(r'^from typing import (.+)$', content, re.MULTILINE)
+    if m:
+        imports = [x.strip() for x in m.group(1).split(',')]
+        if name not in imports:
+            imports.append(name)
+        content = content.replace(m.group(0), f'from typing import {", ".join(imports)}')
+    else:
+        lines = content.split('\n')
+        insert_pos = 0
+        for i, line in enumerate(lines):
+            if line.startswith('from ') or line.startswith('import '):
+                insert_pos = i + 1
+            elif line.strip() and not line.startswith('#') and not line.startswith('"""') and not line.startswith("'''"):
+                break
+        lines.insert(insert_pos, f'from typing import {name}')
+        content = '\n'.join(lines)
+    return content
+
+
+def fix_dataclass_kw_only(content):
+    if 'kw_only' not in content:
+        return content
+    if not re.search(r'@(?:dataclasses\.)?dataclass\([^)]*kw_only\s*=', content):
+        return content
+
+    lines = content.split('\n')
+    new_lines = []
+    for line in lines:
+        m = re.match(r'^(\s*@(?:dataclasses\.)?dataclass\()(.+)(\)\s*)$', line)
+        if m and 'kw_only=' in line:
+            prefix = m.group(1)
+            args_str = m.group(2)
+            suffix = m.group(3)
+            args_str = re.sub(r',?\s*kw_only\s*=\s*(True|False)', '', args_str)
+            args_str = re.sub(r'^\s*,\s*', '', args_str)
+            args_str = re.sub(r',\s*,', ',', args_str)
+            args_str = args_str.strip()
+            if args_str.endswith(','):
+                args_str = args_str[:-1].strip()
+            if args_str:
+                new_lines.append(f'{prefix}{args_str}{suffix}')
+            else:
+                new_lines.append(f'{prefix.rstrip("(")}{suffix.lstrip(")")}')
+        else:
+            new_lines.append(line)
+
+    content = '\n'.join(new_lines)
+    content = content.replace('@dataclass()', '@dataclass')
+    content = content.replace('@dataclasses.dataclass()', '@dataclasses.dataclass')
+
+    return content
+
+
+def fix_inspect_get_annotations(content):
+    if 'inspect.get_annotations' not in content:
+        return content
+    if 'except' in content and 'get_annotations' in content:
+        return content
+    if 'try:' in content and 'get_annotations' in content:
+        return content
+
+    needs_compat = False
+    lines = content.split('\n')
+    new_lines = []
+
+    for line in lines:
+        if 'inspect.get_annotations(' in line and '_get_annotations_compat' not in line:
+            line = line.replace('inspect.get_annotations(', '_inspect_get_annotations_compat(')
+            needs_compat = True
+        new_lines.append(line)
+
+    if needs_compat and '_inspect_get_annotations_compat' not in content:
+        compat_code = """try:
+    from inspect import get_annotations as _inspect_get_annotations_compat
+except ImportError:
+    import typing
+    def _inspect_get_annotations_compat(obj, *, eval_str=False, format=None):
+        if format is not None and format != 1:
+            raise ValueError("Unsupported format")
+        if isinstance(obj, type):
+            ann = obj.__dict__.get('__annotations__', None)
+        elif callable(obj):
+            ann = getattr(obj, '__annotations__', None)
+        else:
+            raise TypeError(f"{type(obj)!r} is not a module, class, or callable")
+        if ann is None:
+            return {}
+        if not eval_str:
+            return dict(ann)
+        import sys
+        module = getattr(obj, '__module__', None)
+        if module:
+            globals = sys.modules[module].__dict__ if module in sys.modules else {}
+        else:
+            globals = {}
+        locals = {}
+        resolved = {}
+        for key, value in ann.items():
+            if isinstance(value, str):
+                try:
+                    resolved[key] = eval(value, globals, locals)
+                except Exception:
+                    resolved[key] = value
+            else:
+                resolved[key] = value
+        return resolved
+"""
+        insert_pos = 0
+        for i, line in enumerate(new_lines):
+            if line.startswith('from ') or line.startswith('import '):
+                insert_pos = i + 1
+            elif line.strip() and not line.startswith('#') and not line.startswith('"""') and not line.startswith("'''"):
+                break
+        new_lines.insert(insert_pos, compat_code.rstrip())
+        content = '\n'.join(new_lines)
+    else:
+        content = '\n'.join(new_lines)
+
+    return content
+
+
+def fix_type_alias_type(content):
+    if 'TypeAliasType' not in content:
+        return content
+    if 'except' in content and 'TypeAliasType' in content:
+        return content
+    if 'try:' in content and 'TypeAliasType' in content:
+        return content
+
+    lines = content.split('\n')
+    new_lines = []
+
+    for line in lines:
+        stripped = line.strip()
+        m = re.match(r'^(\s*)(\w+)\s*=\s*TypeAliasType\s*\(\s*["\'](\w+)["\']\s*,\s*(.+)\s*\)\s*$', line)
+        if m:
+            indent = m.group(1)
+            var_name = m.group(2)
+            alias_name = m.group(3)
+            value = m.group(4).rstrip(')')
+            if '|' in value:
+                value = _convert_pipe_to_union(value)
+            new_lines.append(f'{indent}{var_name}: TypeAlias = {value}')
+            continue
+
+        if 'TypeAliasType' in stripped and not stripped.startswith('#'):
+            if 'from typing' not in stripped and 'import' not in stripped:
+                new_lines.append(f'# TODO: Python 3.8 compat - TypeAliasType not available, needs manual conversion')
+                new_lines.append(f'# {line}')
+                continue
+
+        new_lines.append(line)
+
+    content = '\n'.join(new_lines)
+    content = _ensure_typing_import(content, 'TypeAlias')
+
+    return content
+
+
+def fix_runtime_type_union(content):
+    if '|' not in content:
+        return content
+
+    has_future = 'from __future__ import annotations' in content
+
+    if not has_future:
+        return content
+
+    needs_fix = False
+    lines = content.split('\n')
+    new_lines = []
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith('#') or stripped.startswith('"""') or stripped.startswith("'''"):
+            new_lines.append(line)
+            continue
+
+        if '|' not in line:
+            new_lines.append(line)
+            continue
+
+        if re.search(r'^\s*\w+\s*:\s*(?!TypeAlias)', stripped):
+            if re.search(r'^\s*\w+\s*:\s*\w+\s*\|', stripped):
+                if not re.search(r'(re\.\w+|0x[0-9a-fA-F]+)\s*\|', stripped):
+                    if not re.search(r'def\s+\w+', stripped):
+                        m = re.match(r'^(\s*)(\w+)\s*:\s*(.+?)(\s*=\s*.+)?$', line)
+                        if m:
+                            indent = m.group(1)
+                            name = m.group(2)
+                            type_expr = m.group(3)
+                            default = m.group(4) or ''
+                            if '|' in type_expr and 'TypeAlias' not in stripped:
+                                type_expr = _convert_pipe_to_union(type_expr)
+                                needs_fix = True
+                            new_lines.append(f'{indent}{name}: {type_expr}{default}')
+                            continue
+
+        if re.search(r'bound\s*=\s*.+\|', stripped):
+            m = re.match(r'^(\s*bound\s*=\s*)(.+)$', line)
+            if m:
+                prefix = m.group(1)
+                value = m.group(2).rstrip(',')
+                if '|' in value:
+                    value = _convert_pipe_to_union(value)
+                    needs_fix = True
+                new_lines.append(f'{prefix}{value},')
+                continue
+
+        new_lines.append(line)
+
+    if needs_fix:
+        content = '\n'.join(new_lines)
+        content = _ensure_typing_import(content, 'Union')
+    else:
+        content = '\n'.join(new_lines)
+
+    return content
+
+
+def fix_collections_abc_iterator_subscript(content):
+    if 'from collections.abc import' not in content:
+        return content
+    if not re.search(r'\b(Iterator|Iterable|Sequence|Mapping|Callable)\s*\[', content):
+        return content
+
+    has_future = 'from __future__ import annotations' in content
+    if has_future:
+        return content
+
+    abc_types = {'Iterator', 'Iterable', 'Sequence', 'MutableSequence',
+                 'Mapping', 'MutableMapping', 'Set', 'MutableSet',
+                 'Callable', 'Container', 'Collection', 'Reversible'}
+
+    needs_fix = False
+    m = re.search(r'from collections\.abc import (.+)', content)
+    if not m:
+        return content
+
+    imports_str = m.group(1)
+    imports = [i.strip() for i in imports_str.split(',')]
+
+    subscripted_abc = set()
+    for abc_type in abc_types:
+        if abc_type in imports and re.search(rf'\b{abc_type}\s*\[', content):
+            subscripted_abc.add(abc_type)
+
+    if not subscripted_abc:
+        return content
+
+    other_imports = [i for i in imports if i not in subscripted_abc]
+
+    typing_match = re.search(r'from typing import (.+)', content)
+    existing_typing = set()
+    if typing_match:
+        existing_typing = {x.strip().split(' as ')[0].split('[')[0] for x in typing_match.group(1).split(',')}
+
+    new_typing_items = sorted(subscripted_abc - existing_typing)
+    if new_typing_items:
+        needs_fix = True
+        if typing_match:
+            all_items = [x.strip() for x in typing_match.group(1).split(',')]
+            for item in new_typing_items:
+                if item not in all_items:
+                    all_items.append(item)
+            content = content.replace(typing_match.group(0), f'from typing import {", ".join(all_items)}')
+        else:
+            insert_line = f'from typing import {", ".join(new_typing_items)}'
+            lines = content.split('\n')
+            insert_pos = 0
+            for i, line in enumerate(lines):
+                if line.startswith('from ') or line.startswith('import '):
+                    insert_pos = i + 1
+                elif line.strip() and not line.startswith('#'):
+                    break
+            lines.insert(insert_pos, insert_line)
+            content = '\n'.join(lines)
+
+    if other_imports:
+        content = content.replace(
+            f'from collections.abc import {imports_str}',
+            f'from collections.abc import {", ".join(other_imports)}'
+        )
+    else:
+        content = content.replace(f'from collections.abc import {imports_str}\n', '')
+        content = content.replace(f'from collections.abc import {imports_str}', '')
+
+    return content
+
+
+def fix_pep604_non_annotation(content):
+    if '|' not in content:
+        return content
+
+    has_future = 'from __future__ import annotations' in content
+    if not has_future:
+        return content
+
+    needs_union = False
+    lines = content.split('\n')
+    new_lines = []
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith('#'):
+            new_lines.append(line)
+            continue
+
+        if '|' not in line:
+            new_lines.append(line)
+            continue
+
+        if re.search(r'^\s*def\s+\w+', line):
+            new_lines.append(line)
+            continue
+
+        if re.search(r'\bre\.\w+\s*\|', stripped):
+            new_lines.append(line)
+            continue
+
+        if re.search(r'\b0x[0-9a-fA-F]+\s*\|', stripped):
+            new_lines.append(line)
+            continue
+
+        if re.search(r'\|\|', stripped):
+            new_lines.append(line)
+            continue
+
+        if re.search(r'^\s*\w+\s*\|', stripped) and ':' not in stripped and '=' not in stripped:
+            new_lines.append(line)
+            continue
+
+        m = re.match(r'^(\s*)(\w+)\s*:\s*TypeAlias\s*=\s*(.+)$', line)
+        if m:
+            new_lines.append(line)
+            continue
+
+        m = re.match(r'^(\s*)(\w+)\s*=\s*(.+)\s*\|\s*(.+)$', line)
+        if m:
+            indent = m.group(1)
+            name = m.group(2)
+            rest = line[line.index('=') + 1:].strip()
+            if re.search(r'^[A-Z]\w*(\s*\|\s*[A-Z]\w*)+', rest):
+                if not re.search(r're\.\w+', rest):
+                    converted = _convert_pipe_to_union(rest)
+                    new_lines.append(f'{indent}{name} = {converted}')
+                    needs_union = True
+                    continue
+
+        new_lines.append(line)
+
+    if needs_union:
+        content = '\n'.join(new_lines)
+        content = _ensure_typing_import(content, 'Union')
+    else:
+        content = '\n'.join(new_lines)
+
+    return content
+
+
 def fix_future_import_position(content):
     if "from __future__" not in content:
         return content
@@ -4558,6 +5070,53 @@ def fix_future_import_position(content):
     return '\n'.join(lines)
 
 
+def _normalize_multiline_imports(content):
+    if not re.search(r'^\s*from\s+[\w.]+\s+import\s*\(', content, re.MULTILINE):
+        return content
+
+    lines = content.split('\n')
+    new_lines = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        m = re.match(r'^(\s*)from\s+([\w.]+)\s+import\s*\(\s*$', line)
+        if not m:
+            new_lines.append(line)
+            i += 1
+            continue
+
+        indent = m.group(1)
+        module = m.group(2)
+        items = []
+        j = i + 1
+        closed = False
+        while j < len(lines):
+            item_line = lines[j].strip()
+            if item_line.endswith(')'):
+                before_paren = item_line[:item_line.rfind(')')].strip()
+                if before_paren:
+                    line_items = [x.strip() for x in before_paren.rstrip(',').split(',') if x.strip()]
+                    items.extend(line_items)
+                closed = True
+                j += 1
+                break
+            if item_line == '':
+                j += 1
+                continue
+            line_items = [x.strip() for x in item_line.rstrip(',').split(',') if x.strip()]
+            items.extend(line_items)
+            j += 1
+
+        if closed and items:
+            new_lines.append(f"{indent}from {module} import {', '.join(items)}")
+        else:
+            for k in range(i, j):
+                new_lines.append(lines[k])
+        i = j
+
+    return '\n'.join(new_lines)
+
+
 def process_file(filepath):
     import py_compile
     import tempfile
@@ -4567,6 +5126,8 @@ def process_file(filepath):
         content = f.read()
 
     original = content
+
+    content = _normalize_multiline_imports(content)
 
     content = fix_lambda_decorator(content)
     content = fix_pep695_generic_class(content)
@@ -4628,6 +5189,13 @@ def process_file(filepath):
     content = fix_regex_flag_merge(content)
     content = fix_types_py39_aliases(content, filepath)
     content = fix_array_api_compat_typing(content)
+    content = fix_type_alias_union(content)
+    content = fix_dataclass_kw_only(content)
+    content = fix_inspect_get_annotations(content)
+    content = fix_type_alias_type(content)
+    content = fix_runtime_type_union(content)
+    content = fix_collections_abc_iterator_subscript(content)
+    content = fix_pep604_non_annotation(content)
     content = fix_duplicate_imports(content)
     content = fix_future_import_position(content)
 
@@ -4741,15 +5309,18 @@ def main():
 
     checks = [
         (r"\.removeprefix\(|\.removesuffix\(", "str.removeprefix/removesuffix"),
-        (r"from functools import.*\bcache\b[^d]|@functools\.cache\b", "functools.cache"),
+        (r"from functools import.*\bcache\b(?!d)", "functools.cache"),
+        (r"@functools\.cache\b", "functools.cache decorator"),
+        (r"@cache\b(?!_)", "cache decorator"),
         (r"isinstance\([^)]*\|[^)]*\)", "isinstance(x, A|B)"),
         (r"issubclass\([^)]*\|[^)]*\)", "issubclass(x, A|B)"),
-        (r"^import importlib\.metadata", "import importlib.metadata"),
+        (r"^import importlib\.metadata(?!.*except)", "import importlib.metadata"),
+        (r"^from importlib\.metadata import (?!.*except)", "from importlib.metadata import"),
         (r"^from typing import .*\bTypeAlias\b", "from typing import TypeAlias"),
         (r"^from typing import .*\bTypeGuard\b", "from typing import TypeGuard"),
         (r"^from typing import .*\bParamSpec\b", "from typing import ParamSpec"),
         (r"^from typing import .*\bConcatenate\b", "from typing import Concatenate"),
-        (r"^from typing import .*\bAnnotated\b(?!.*try:)", "from typing import Annotated"),
+        (r"^from typing import .*\bAnnotated\b", "from typing import Annotated"),
         (r"^import zoneinfo$", "import zoneinfo"),
         (r"^import graphlib$", "import graphlib"),
         (r"^type\s+\w+\s*(\[|=\s*)", "PEP 695 type statement (3.12+)"),
@@ -4758,8 +5329,8 @@ def main():
         (r"^\s+match\s+(?!https?://)\w+\s*:", "PEP 634 match/case (3.10+)"),
         (r"^\s+case\s+[\[{_0-9\"'].*:", "PEP 634 case statement (3.10+)"),
         (r"with\s*\([^)]*\)\s*as\s+\w+\s*:", "parenthesized context manager (3.10+)"),
-        (r"^from typing import .*\bNotRequired\b(?!.*try:)", "typing.NotRequired (3.11+)"),
-        (r"^from collections\.abc import .*\bBuffer\b(?!.*try:)", "collections.abc.Buffer (3.12+)"),
+        (r"^from typing import .*\bNotRequired\b", "typing.NotRequired (3.11+)"),
+        (r"^from collections\.abc import .*\bBuffer\b", "collections.abc.Buffer (3.12+)"),
         (r"\bmath\.lcm\s*\(", "math.lcm (3.9+)"),
         (r"\bmath\.nextafter\b", "math.nextafter (3.9+)"),
         (r"\bmath\.ulp\s*\(", "math.ulp (3.9+)"),
@@ -4814,6 +5385,28 @@ def main():
             if "setuptools" in file_content and "distutils" in desc:
                 if re.search(r'try:\s*\n\s*from distutils', file_content):
                     continue
+            if desc in ("from typing import Annotated", "from typing import TypeAlias",
+                        "from typing import TypeGuard", "from typing import ParamSpec",
+                        "from typing import Concatenate", "typing.NotRequired (3.11+)"):
+                lines_to_check = []
+                for cl in file_content.split('\n'):
+                    s = cl.strip()
+                    if s.startswith('try:') or s.startswith('except') or s.startswith('from typing_extensions'):
+                        continue
+                    lines_to_check.append(cl)
+                check_content = '\n'.join(lines_to_check)
+                count += len(re.findall(pattern, check_content, re.MULTILINE))
+                continue
+            if desc in ("import importlib.metadata", "from importlib.metadata import"):
+                lines_to_check = []
+                for cl in file_content.split('\n'):
+                    s = cl.strip()
+                    if s.startswith('try:') or s.startswith('except') or s.startswith('import importlib_metadata') or s.startswith('from importlib_metadata'):
+                        continue
+                    lines_to_check.append(cl)
+                check_content = '\n'.join(lines_to_check)
+                count += len(re.findall(pattern, check_content, re.MULTILINE))
+                continue
             if "sys.version_info" in file_content and "annotationlib" in desc:
                 continue
             if "nextafter" in desc:

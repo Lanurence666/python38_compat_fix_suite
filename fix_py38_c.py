@@ -32,8 +32,11 @@ def _should_skip_site_packages(root):
 EXTRA_COMPAT_IMPLEMENTATIONS = r'''
 
 // ===== 以下兼容实现不在上游 pythoncapi_compat.h 中，由 fix_py38_c.py 追加 =====
+// 每个函数都有 per-function guard (#ifndef _PYCAPI_COMPAT_XXX) 避免重复定义
 
 // PyObject_VectorcallDict() - Python 3.12.0a5
+#ifndef _PYCAPI_COMPAT_PyObject_VectorcallDict
+#define _PYCAPI_COMPAT_PyObject_VectorcallDict
 #if PY_VERSION_HEX < 0x030C00A5
 static inline PyObject*
 PyObject_VectorcallDict(PyObject *callable, PyObject *const *args,
@@ -52,8 +55,11 @@ PyObject_VectorcallDict(PyObject *callable, PyObject *const *args,
     return result;
 }
 #endif
+#endif /* _PYCAPI_COMPAT_PyObject_VectorcallDict */
 
 // PyObject_VectorcallMethod() - Python 3.12.0a5
+#ifndef _PYCAPI_COMPAT_PyObject_VectorcallMethod
+#define _PYCAPI_COMPAT_PyObject_VectorcallMethod
 #if PY_VERSION_HEX < 0x030C00A5
 static inline PyObject*
 PyObject_VectorcallMethod(PyObject *name, PyObject *const *args,
@@ -69,8 +75,11 @@ PyObject_VectorcallMethod(PyObject *name, PyObject *const *args,
     return result;
 }
 #endif
+#endif /* _PYCAPI_COMPAT_PyObject_VectorcallMethod */
 
 // PyErr_GetRaisedException() / PyErr_SetRaisedException() - Python 3.12.0a1
+#ifndef _PYCAPI_COMPAT_PyErr_GetRaisedException
+#define _PYCAPI_COMPAT_PyErr_GetRaisedException
 #if PY_VERSION_HEX < 0x030C00A1
 static inline PyObject* PyErr_GetRaisedException(void)
 {
@@ -81,7 +90,12 @@ static inline PyObject* PyErr_GetRaisedException(void)
     Py_XDECREF(exc_tb);
     return exc_value;
 }
+#endif
+#endif /* _PYCAPI_COMPAT_PyErr_GetRaisedException */
 
+#ifndef _PYCAPI_COMPAT_PyErr_SetRaisedException
+#define _PYCAPI_COMPAT_PyErr_SetRaisedException
+#if PY_VERSION_HEX < 0x030C00A1
 static inline int PyErr_SetRaisedException(PyObject *exc)
 {
     PyErr_SetObject((PyObject*)Py_TYPE(exc), exc);
@@ -89,11 +103,100 @@ static inline int PyErr_SetRaisedException(PyObject *exc)
     return 0;
 }
 #endif
+#endif /* _PYCAPI_COMPAT_PyErr_SetRaisedException */
 
 // PyType_GetSlot() - Python 3.9.0a2
-// Python 3.8 already provides PyType_GetSlot in object.h, skip redefinition
+// Python 3.8 already provides PyType_GetSlot in object.h, so we only
+// define it for versions < 3.8 (which practically never happens).
+// The upstream pythoncapi_compat.h also defines this with its own guard.
+#ifndef _PYCAPI_COMPAT_PyType_GetSlot
+#define _PYCAPI_COMPAT_PyType_GetSlot
 #if PY_VERSION_HEX < 0x03080000
 #include <stdint.h>
+#ifndef Py_tp_base
+#define Py_tp_base 0
+#endif
+#ifndef Py_tp_bases
+#define Py_tp_bases 1
+#endif
+#ifndef Py_tp_mro
+#define Py_tp_mro 2
+#endif
+#ifndef Py_tp_dict
+#define Py_tp_dict 3
+#endif
+#ifndef Py_tp_name
+#define Py_tp_name 4
+#endif
+#ifndef Py_tp_doc
+#define Py_tp_doc 5
+#endif
+#ifndef Py_tp_hash
+#define Py_tp_hash 6
+#endif
+#ifndef Py_tp_call
+#define Py_tp_call 7
+#endif
+#ifndef Py_tp_str
+#define Py_tp_str 8
+#endif
+#ifndef Py_tp_getattr
+#define Py_tp_getattr 9
+#endif
+#ifndef Py_tp_setattr
+#define Py_tp_setattr 10
+#endif
+#ifndef Py_tp_repr
+#define Py_tp_repr 11
+#endif
+#ifndef Py_tp_richcompare
+#define Py_tp_richcompare 12
+#endif
+#ifndef Py_tp_iter
+#define Py_tp_iter 13
+#endif
+#ifndef Py_tp_iternext
+#define Py_tp_iternext 14
+#endif
+#ifndef Py_tp_descr_get
+#define Py_tp_descr_get 15
+#endif
+#ifndef Py_tp_descr_set
+#define Py_tp_descr_set 16
+#endif
+#ifndef Py_tp_init
+#define Py_tp_init 17
+#endif
+#ifndef Py_tp_new
+#define Py_tp_new 18
+#endif
+#ifndef Py_tp_del
+#define Py_tp_del 19
+#endif
+#ifndef Py_tp_alloc
+#define Py_tp_alloc 20
+#endif
+#ifndef Py_tp_free
+#define Py_tp_free 21
+#endif
+#ifndef Py_tp_getattro
+#define Py_tp_getattro 22
+#endif
+#ifndef Py_tp_setattro
+#define Py_tp_setattro 23
+#endif
+#ifndef Py_tp_as_number
+#define Py_tp_as_number 24
+#endif
+#ifndef Py_tp_as_sequence
+#define Py_tp_as_sequence 25
+#endif
+#ifndef Py_tp_as_mapping
+#define Py_tp_as_mapping 26
+#endif
+#ifndef Py_tp_flags
+#define Py_tp_flags 27
+#endif
 static inline void* PyType_GetSlot(PyTypeObject *type, int slot)
 {
     if (type == NULL || Py_TYPE(type) == NULL) {
@@ -139,8 +242,11 @@ static inline void* PyType_GetSlot(PyTypeObject *type, int slot)
     return NULL;
 }
 #endif
+#endif /* _PYCAPI_COMPAT_PyType_GetSlot */
 
 // PyType_GetModule() - Python 3.9.0a2
+#ifndef _PYCAPI_COMPAT_PyType_GetModule
+#define _PYCAPI_COMPAT_PyType_GetModule
 #if PY_VERSION_HEX < 0x030900A2
 static inline PyObject* PyType_GetModule(PyTypeObject *type)
 {
@@ -176,8 +282,11 @@ static inline PyObject* PyType_GetModule(PyTypeObject *type)
     return NULL;
 }
 #endif
+#endif /* _PYCAPI_COMPAT_PyType_GetModule */
 
 // PyType_GetModuleByDef() - Python 3.9.0a2 (stub)
+#ifndef _PYCAPI_COMPAT_PyType_GetModuleByDef
+#define _PYCAPI_COMPAT_PyType_GetModuleByDef
 #if PY_VERSION_HEX < 0x030900A2
 static inline PyObject* PyType_GetModuleByDef(PyTypeObject *type, PyModuleDef *def)
 {
@@ -185,6 +294,7 @@ static inline PyObject* PyType_GetModuleByDef(PyTypeObject *type, PyModuleDef *d
     return NULL;
 }
 #endif
+#endif /* _PYCAPI_COMPAT_PyType_GetModuleByDef */
 
 // Py_TPFLAGS_HAVE_VECTORCALL - Python 3.9.0a4
 // In Python 3.8, vectorcall is available as _PyObject_Vectorcall (3.8b1),
@@ -287,15 +397,20 @@ typedef PyObject *(*PyCMethod)(PyObject *, PyTypeObject *, PyObject *, PyObject 
 #endif
 
 // PyObject_GetAIter() - Python 3.10.0a6
+#ifndef _PYCAPI_COMPAT_PyObject_GetAIter
+#define _PYCAPI_COMPAT_PyObject_GetAIter
 #if PY_VERSION_HEX < 0x030A00A6 && !defined(PYPY_VERSION)
 static inline PyObject* PyObject_GetAIter(PyObject *o)
 {
     return PyObject_CallMethod(o, "__aiter__", NULL);
 }
 #endif
+#endif /* _PYCAPI_COMPAT_PyObject_GetAIter */
 
 // PyModule_AddFunctions() - Python 3.9.0a5
 // Python 3.8 already provides PyModule_AddFunctions in modsupport.h, skip redefinition
+#ifndef _PYCAPI_COMPAT_PyModule_AddFunctions
+#define _PYCAPI_COMPAT_PyModule_AddFunctions
 #if PY_VERSION_HEX < 0x03080000
 static inline int PyModule_AddFunctions(PyObject *module, PyMethodDef *methods)
 {
@@ -315,9 +430,12 @@ static inline int PyModule_AddFunctions(PyObject *module, PyMethodDef *methods)
     return 0;
 }
 #endif
+#endif /* _PYCAPI_COMPAT_PyModule_AddFunctions */
 
 // PyInterpreterState_GetDict() - Python 3.12.0a2
 // Python 3.8 already provides PyInterpreterState_GetDict in pystate.h, skip redefinition
+#ifndef _PYCAPI_COMPAT_PyInterpreterState_GetDict
+#define _PYCAPI_COMPAT_PyInterpreterState_GetDict
 #if PY_VERSION_HEX < 0x03080000 && !defined(PYPY_VERSION)
 static inline PyObject* PyInterpreterState_GetDict(PyInterpreterState *interp)
 {
@@ -330,9 +448,12 @@ static inline PyObject* PyInterpreterState_GetDict(PyInterpreterState *interp)
     return dict;
 }
 #endif
+#endif /* _PYCAPI_COMPAT_PyInterpreterState_GetDict */
 
 // PyErr_GetExcInfo() / PyErr_SetExcInfo() - Python 3.11.0a1 (internal in 3.8)
 // Python 3.8 already provides these in pyerrors.h, skip redefinition
+#ifndef _PYCAPI_COMPAT_PyErr_GetExcInfo
+#define _PYCAPI_COMPAT_PyErr_GetExcInfo
 #if PY_VERSION_HEX < 0x03080000 && !defined(PYPY_VERSION)
 static inline void PyErr_GetExcInfo(PyObject **type, PyObject **value, PyObject **traceback)
 {
@@ -343,12 +464,18 @@ static inline void PyErr_GetExcInfo(PyObject **type, PyObject **value, PyObject 
     Py_XINCREF(*value);
     Py_XINCREF(*traceback);
 }
+#endif
+#endif /* _PYCAPI_COMPAT_PyErr_GetExcInfo */
 
+#ifndef _PYCAPI_COMPAT_PyErr_SetExcInfo
+#define _PYCAPI_COMPAT_PyErr_SetExcInfo
+#if PY_VERSION_HEX < 0x03080000 && !defined(PYPY_VERSION)
 static inline void PyErr_SetExcInfo(PyObject *type, PyObject *value, PyObject *traceback)
 {
     PyErr_Restore(type, value, traceback);
 }
 #endif
+#endif /* _PYCAPI_COMPAT_PyErr_SetExcInfo */
 '''
 
 _EMBEDDED_PYTHONCAPI_COMPAT_H = None
@@ -1776,7 +1903,7 @@ def fix_pythoncapi_compat_static_conflicts(content):
         'PyErr_GetExcInfo': {
             'version_check': r'#if\s+PY_VERSION_HEX\s*<\s*0x030B00A1',
             'new_version': '#if PY_VERSION_HEX < 0x03080000',
-            'comment': '// Python 3.8 already provides PyErr_GetExcInfo in pyerrors.h',
+            'comment': '// Python 3.8 already provides PyErr_GetExcInfo in pyerrors.h (internal)',
         },
     }
 
@@ -1837,6 +1964,14 @@ def _add_per_function_guards(content):
 
     while i < len(lines):
         line = lines[i]
+
+        if i > 0:
+            prev_stripped = lines[i - 1].strip()
+            if prev_stripped.startswith('#ifndef _PYCAPI_COMPAT_') or prev_stripped.startswith('#define _PYCAPI_COMPAT_'):
+                new_lines.append(line)
+                i += 1
+                continue
+
         m = re.match(r'^static inline\s+[\w\s\*]+?\s+(Py\w+)\s*\(', line)
         if not m:
             m2 = re.match(r'^static inline\s+[\w\s\*]+?\s+(_Py\w+)\s*\(', line)
@@ -1854,6 +1989,18 @@ def _add_per_function_guards(content):
             new_lines.append(line)
             i += 1
             continue
+
+        if i > 0:
+            for k in range(max(0, i - 3), i):
+                if lines[k].strip().startswith('#ifndef _PYCAPI_COMPAT_'):
+                    guarded_funcs.add(guard_name)
+                    new_lines.append(line)
+                    i += 1
+                    break
+            else:
+                pass
+            if guard_name in guarded_funcs:
+                continue
 
         func_lines = [line]
         brace_depth = 0

@@ -26,8 +26,9 @@
 |------|------|------|------|
 | **NumPy** | 2.x（最新 main） | 在 Python 3.8 上编译并测试通过 | [numpy_backport_py38](https://github.com/Lanurence666/numpy_backport_py38) |
 | **SciPy** | 1.x（最新 main） | 在 Python 3.8 上编译并测试通过 | [scipy_backport_py38](https://github.com/Lanurence666/scipy_backport_py38) |
+| **PyTorch** | 2.13.0a0（最新 main） | 在 Python 3.8 上编译并测试通过 | [pytorch_backport_py38](https://github.com/Lanurence666/pytorch_backport_py38) |
 
-两个项目均以最大优化标志编译，并发布为可安装的 wheel 包。
+两个项目均以最大优化标志编译，并发布为可安装的 wheel 包。PyTorch 以可编辑（开发）模式安装进行测试。
 
 ## fix_py38_python.py — Python 源码修复
 
@@ -65,6 +66,7 @@
 | 28 | `types.GenericAlias` / `EllipsisType` / `NotImplementedType` | 3.9+ | 在 `__init__.py` 中 monkey-patch |
 | 29 | 重复导入 | — | 合并 `from X import` 语句 |
 | 30 | `array_api_compat` 中的 PEP 585 类型标注 | 3.9+ | 替换类型注解中的内置泛型 |
+| 31 | `AttributeError(msg, name=..., obj=...)` keyword-only 参数 | 3.10+ | 移除 `name=None`/`obj=None` 或使用 `_AttributeError_compat()` 辅助函数 |
 
 ### Python 3.10–3.15 函数（仅检测，不自动修复）
 
@@ -100,6 +102,7 @@
 4. 修复 `CMakeLists.txt` / `setup.py` 中的 Python 版本约束
 5. 修复 `pythoncapi_compat.h` 中 Python 3.8 已有函数的静态/非静态声明冲突
 6. 自动检测并更新不完整的 `pythoncapi_compat.h` 文件
+7. 为 `pythoncapi_compat.h` 添加逐函数 `#ifndef` 保护，防止多个项目（如 numpy + scipy）各自包含副本时的重定义错误
 
 ### Python 3.9+ C API 变更覆盖
 

@@ -26,8 +26,9 @@ We have successfully used this suite to backport two major scientific computing 
 |---------|---------|--------|------------|
 | **NumPy** | 2.x (latest main) | Compiled & tested on Python 3.8 | [numpy_backport_py38](https://github.com/Lanurence666/numpy_backport_py38) |
 | **SciPy** | 1.x (latest main) | Compiled & tested on Python 3.8 | [scipy_backport_py38](https://github.com/Lanurence666/scipy_backport_py38) |
+| **PyTorch** | 2.13.0a0 (latest main) | Compiled & tested on Python 3.8 | [pytorch_backport_py38](https://github.com/Lanurence666/pytorch_backport_py38) |
 
-Both projects were compiled with maximum optimization flags and released as installable wheels.
+Both projects were compiled with maximum optimization flags and released as installable wheels. PyTorch was installed in editable (development) mode for testing.
 
 ## fix_py38_python.py — Python Source Fixes
 
@@ -65,6 +66,7 @@ Both projects were compiled with maximum optimization flags and released as inst
 | 28 | `types.GenericAlias` / `EllipsisType` / `NotImplementedType` | 3.9+ | Monkey-patch in `__init__.py` |
 | 29 | Duplicate imports | — | Merge `from X import` statements |
 | 30 | `array_api_compat` PEP 585 typing | 3.9+ | Replace built-in generics in type annotations |
+| 31 | `AttributeError(msg, name=..., obj=...)` keyword-only args | 3.10+ | Remove `name=None`/`obj=None` or use `_AttributeError_compat()` helper |
 
 ### Python 3.10–3.15 Functions (Detected but NOT Auto-Fixed)
 
@@ -100,6 +102,7 @@ The script detects the following features but does **not** automatically fix the
 4. Fix `CMakeLists.txt` / `setup.py` Python version constraints
 5. Fix static/non-static declaration conflicts in `pythoncapi_compat.h` for functions already present in Python 3.8 system headers
 6. Auto-detect and update incomplete `pythoncapi_compat.h` files
+7. Add per-function `#ifndef` guards to `pythoncapi_compat.h` to prevent redefinition errors when multiple projects (e.g., numpy + scipy) each include their own copy
 
 ### Python 3.9+ C API Changes Covered
 

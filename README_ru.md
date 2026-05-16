@@ -67,6 +67,12 @@
 | 29 | Дублирующиеся импорты | — | Слияние операторов `from X import` |
 | 30 | Типизация PEP 585 в `array_api_compat` | 3.9+ | Замена встроенных дженериков в аннотациях типов |
 | 31 | `AttributeError(msg, name=..., obj=...)` именованные аргументы | 3.10+ | Удалить `name=None`/`obj=None` или использовать вспомогательную функцию `_AttributeError_compat()` |
+| 32 | Объединение псевдонимов типов (`X: TypeAlias = A | B`) | 3.10+ | Замена на `X: TypeAlias = Union[A, B]` с автоимпортом `Union` |
+| 33 | `dataclass(kw_only=True)` | 3.10+ | Удалить параметр `kw_only` |
+| 34 | `inspect.get_annotations()` | 3.10+ | `try/except` с откатом на ручное извлечение аннотаций |
+| 35 | `TypeAliasType` (PEP 695) | 3.12+ | Преобразование в присваивание `typing.TypeAlias` |
+| 36 | Объединение типов времени выполнения (`X | Y` вне аннотаций) | 3.10+ | Преобразование в `Union[X, Y]` в позициях вычисления времени выполнения |
+| 37 | Объединение PEP 604 вне аннотаций (тело класса, значения по умолчанию) | 3.10+ | Преобразование в `Union[X, Y]` с учётом `from __future__ import annotations` |
 
 ### Функции Python 3.10–3.15 (обнаруживаются, но НЕ исправляются автоматически)
 
@@ -127,6 +133,8 @@
 | `PyList_GetItemRef()` | 3.13+ | Откат через `PyList_GetItem` + `Py_XINCREF` |
 | `PyLong_AsInt()` | 3.13+ | Откат через `PyLong_AsLong` + проверка диапазона |
 | `Py_MOD_GIL_NOT_USED` / `PyUnstable_Module_SetGIL()` | 3.13+ | Защита `#ifdef Py_GIL_DISABLED` или проверкой версии |
+| `PyObject_GetAIter()` | 3.10+ | Откат через `PyObject_CallMethod(o, "__aiter__", NULL)` |
+| Константы слотов `Py_tp_*` | 3.9+ | Определения с защитой `#ifndef` для совместимости `PyType_GetSlot` |
 
 ### Конфликты системных заголовков Python 3.8
 
@@ -149,6 +157,19 @@
 Файл `pythoncapi_compat.h`, входящий в этот набор, взят из проекта [python/pythoncapi-compat](https://github.com/python/pythoncapi-compat) и лицензирован по лицензии **Zero Clause BSD (0BSD)**.
 
 Мы добавили дополнительные реализации совместимости (секция `EXTRA_COMPAT`) для API, не охваченных апстрим-заголовком, включая API Python 3.12–3.15.
+
+### Пофункциональные защиты
+
+Все функции совместимости в `pythoncapi_compat.h` (как апстрим, так и наши дополнительные реализации) обёрнуты пофункциональными защитами `#ifndef`:
+
+```c
+#ifndef _PYCAPI_COMPAT_PyType_GetSlot
+#define _PYCAPI_COMPAT_PyType_GetSlot
+// ... реализация ...
+#endif /* _PYCAPI_COMPAT_PyType_GetSlot */
+```
+
+Это предотвращает ошибки переопределения, когда несколько проектов (например, NumPy + SciPy + PyTorch) включают свои собственные копии `pythoncapi_compat.h`. Скрипт `fix_py38_c.py` автоматически добавляет эти защиты к существующим `pythoncapi_compat.h`, у которых они отсутствуют.
 
 ## Интернационализация (i18n)
 

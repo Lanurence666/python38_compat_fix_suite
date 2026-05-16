@@ -67,6 +67,12 @@ Both projects were compiled with maximum optimization flags and released as inst
 | 29 | Duplicate imports | — | Merge `from X import` statements |
 | 30 | `array_api_compat` PEP 585 typing | 3.9+ | Replace built-in generics in type annotations |
 | 31 | `AttributeError(msg, name=..., obj=...)` keyword-only args | 3.10+ | Remove `name=None`/`obj=None` or use `_AttributeError_compat()` helper |
+| 32 | Type alias union (`X: TypeAlias = A \| B`) | 3.10+ | Convert to `X: TypeAlias = Union[A, B]` with auto `Union` import |
+| 33 | `dataclass(kw_only=True)` | 3.10+ | Remove `kw_only` parameter |
+| 34 | `inspect.get_annotations()` | 3.10+ | `try/except` fallback to manual annotation extraction |
+| 35 | `TypeAliasType` (PEP 695) | 3.12+ | Convert to `typing.TypeAlias` assignment |
+| 36 | Runtime type union (`X \| Y` outside annotations) | 3.10+ | Convert to `Union[X, Y]` at runtime-evaluated positions |
+| 37 | PEP 604 non-annotation union (class body, default values) | 3.10+ | Convert to `Union[X, Y]` with `from __future__ import annotations` awareness |
 
 ### Python 3.10–3.15 Functions (Detected but NOT Auto-Fixed)
 
@@ -127,6 +133,8 @@ The script detects the following features but does **not** automatically fix the
 | `PyList_GetItemRef()` | 3.13+ | `PyList_GetItem` + `Py_XINCREF` fallback |
 | `PyLong_AsInt()` | 3.13+ | `PyLong_AsLong` + range check fallback |
 | `Py_MOD_GIL_NOT_USED` / `PyUnstable_Module_SetGIL()` | 3.13+ | `#ifdef Py_GIL_DISABLED` or version check guard |
+| `PyObject_GetAIter()` | 3.10+ | `PyObject_CallMethod(o, "__aiter__", NULL)` fallback |
+| `Py_tp_*` slot constants | 3.9+ | `#ifndef` guarded definitions for `PyType_GetSlot` compat |
 
 ### Python 3.8 System Header Conflicts
 
@@ -149,6 +157,19 @@ The following functions are already present in Python 3.8 system headers. The sc
 The `pythoncapi_compat.h` file included in this suite is sourced from the [python/pythoncapi-compat](https://github.com/python/pythoncapi-compat) project, licensed under the **Zero Clause BSD (0BSD)** license.
 
 We have added extra compatibility implementations (`EXTRA_COMPAT` section) for APIs not covered by the upstream header, including Python 3.12–3.15 APIs.
+
+### Per-Function Guards
+
+All compatibility functions in `pythoncapi_compat.h` (both upstream and our extra implementations) are wrapped with per-function `#ifndef` guards:
+
+```c
+#ifndef _PYCAPI_COMPAT_PyType_GetSlot
+#define _PYCAPI_COMPAT_PyType_GetSlot
+// ... implementation ...
+#endif /* _PYCAPI_COMPAT_PyType_GetSlot */
+```
+
+This prevents redefinition errors when multiple projects (e.g., NumPy + SciPy + PyTorch) each include their own copy of `pythoncapi_compat.h`. The `fix_py38_c.py` script automatically adds these guards to any existing `pythoncapi_compat.h` that lacks them.
 
 ## Internationalization (i18n)
 

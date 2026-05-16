@@ -67,6 +67,12 @@
 | 29 | 重复导入 | — | 合并 `from X import` 语句 |
 | 30 | `array_api_compat` 中的 PEP 585 类型标注 | 3.9+ | 替换类型注解中的内置泛型 |
 | 31 | `AttributeError(msg, name=..., obj=...)` keyword-only 参数 | 3.10+ | 移除 `name=None`/`obj=None` 或使用 `_AttributeError_compat()` 辅助函数 |
+| 32 | 类型别名联合 (`X: TypeAlias = A \| B`) | 3.10+ | 转换为 `X: TypeAlias = Union[A, B]`，自动导入 `Union` |
+| 33 | `dataclass(kw_only=True)` | 3.10+ | 移除 `kw_only` 参数 |
+| 34 | `inspect.get_annotations()` | 3.10+ | `try/except` 回退到手动注解提取 |
+| 35 | `TypeAliasType`（PEP 695） | 3.12+ | 转换为 `typing.TypeAlias` 赋值 |
+| 36 | 运行时类型联合（注解外的 `X \| Y`） | 3.10+ | 在运行时求值位置转换为 `Union[X, Y]` |
+| 37 | PEP 604 非注解联合（类体、默认值） | 3.10+ | 转换为 `Union[X, Y]`，感知 `from __future__ import annotations` |
 
 ### Python 3.10–3.15 函数（仅检测，不自动修复）
 
@@ -127,6 +133,8 @@
 | `PyList_GetItemRef()` | 3.13+ | `PyList_GetItem` + `Py_XINCREF` 回退 |
 | `PyLong_AsInt()` | 3.13+ | `PyLong_AsLong` + 范围检查回退 |
 | `Py_MOD_GIL_NOT_USED` / `PyUnstable_Module_SetGIL()` | 3.13+ | `#ifdef Py_GIL_DISABLED` 或版本检查保护 |
+| `PyObject_GetAIter()` | 3.10+ | `PyObject_CallMethod(o, "__aiter__", NULL)` 回退 |
+| `Py_tp_*` 槽常量 | 3.9+ | `#ifndef` 保护的 `PyType_GetSlot` 兼容定义 |
 
 ### Python 3.8 系统头文件冲突
 
@@ -149,6 +157,19 @@
 本套件包含的 `pythoncapi_compat.h` 文件来自 [python/pythoncapi-compat](https://github.com/python/pythoncapi-compat) 项目，采用 **Zero Clause BSD (0BSD)** 许可证。
 
 我们在上游头文件基础上添加了额外的兼容实现（`EXTRA_COMPAT` 部分），涵盖上游未覆盖的 Python 3.12–3.15 API。
+
+### 逐函数保护
+
+`pythoncapi_compat.h` 中的所有兼容函数（包括上游和我们的额外实现）都使用逐函数 `#ifndef` 保护包裹：
+
+```c
+#ifndef _PYCAPI_COMPAT_PyType_GetSlot
+#define _PYCAPI_COMPAT_PyType_GetSlot
+// ... 实现 ...
+#endif /* _PYCAPI_COMPAT_PyType_GetSlot */
+```
+
+这可以防止多个项目（如 NumPy + SciPy + PyTorch）各自包含 `pythoncapi_compat.h` 副本时的重定义错误。`fix_py38_c.py` 脚本会自动为缺少这些保护的现有 `pythoncapi_compat.h` 添加保护。
 
 ## 国际化 (i18n)
 

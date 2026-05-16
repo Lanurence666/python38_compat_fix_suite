@@ -106,140 +106,114 @@ static inline int PyErr_SetRaisedException(PyObject *exc)
 #endif /* _PYCAPI_COMPAT_PyErr_SetRaisedException */
 
 // PyType_GetSlot() - Python 3.9.0a2
-// Python 3.8 already provides PyType_GetSlot in object.h, so we only
-// define it for versions < 3.8 (which practically never happens).
-// The upstream pythoncapi_compat.h also defines this with its own guard.
+// Python 3.8 does NOT provide PyType_GetSlot; it was added in 3.9.
+// Python 3.8 does provide typeslots.h (included via Python.h) which defines
+// all Py_nb_*, Py_sq_*, Py_mp_*, Py_tp_* slot constants.
+// We implement PyType_GetSlot for Python < 3.9 using the type struct fields.
 #ifndef _PYCAPI_COMPAT_PyType_GetSlot
 #define _PYCAPI_COMPAT_PyType_GetSlot
-#if PY_VERSION_HEX < 0x03080000
-#include <stdint.h>
-#ifndef Py_tp_base
-#define Py_tp_base 0
-#endif
-#ifndef Py_tp_bases
-#define Py_tp_bases 1
-#endif
-#ifndef Py_tp_mro
-#define Py_tp_mro 2
-#endif
-#ifndef Py_tp_dict
-#define Py_tp_dict 3
-#endif
-#ifndef Py_tp_name
-#define Py_tp_name 4
-#endif
-#ifndef Py_tp_doc
-#define Py_tp_doc 5
-#endif
-#ifndef Py_tp_hash
-#define Py_tp_hash 6
-#endif
-#ifndef Py_tp_call
-#define Py_tp_call 7
-#endif
-#ifndef Py_tp_str
-#define Py_tp_str 8
-#endif
-#ifndef Py_tp_getattr
-#define Py_tp_getattr 9
-#endif
-#ifndef Py_tp_setattr
-#define Py_tp_setattr 10
-#endif
-#ifndef Py_tp_repr
-#define Py_tp_repr 11
-#endif
-#ifndef Py_tp_richcompare
-#define Py_tp_richcompare 12
-#endif
-#ifndef Py_tp_iter
-#define Py_tp_iter 13
-#endif
-#ifndef Py_tp_iternext
-#define Py_tp_iternext 14
-#endif
-#ifndef Py_tp_descr_get
-#define Py_tp_descr_get 15
-#endif
-#ifndef Py_tp_descr_set
-#define Py_tp_descr_set 16
-#endif
-#ifndef Py_tp_init
-#define Py_tp_init 17
-#endif
-#ifndef Py_tp_new
-#define Py_tp_new 18
-#endif
-#ifndef Py_tp_del
-#define Py_tp_del 19
-#endif
-#ifndef Py_tp_alloc
-#define Py_tp_alloc 20
-#endif
-#ifndef Py_tp_free
-#define Py_tp_free 21
-#endif
-#ifndef Py_tp_getattro
-#define Py_tp_getattro 22
-#endif
-#ifndef Py_tp_setattro
-#define Py_tp_setattro 23
-#endif
-#ifndef Py_tp_as_number
-#define Py_tp_as_number 24
-#endif
-#ifndef Py_tp_as_sequence
-#define Py_tp_as_sequence 25
-#endif
-#ifndef Py_tp_as_mapping
-#define Py_tp_as_mapping 26
-#endif
-#ifndef Py_tp_flags
-#define Py_tp_flags 27
-#endif
+#if PY_VERSION_HEX < 0x030900A0
 static inline void* PyType_GetSlot(PyTypeObject *type, int slot)
 {
-    if (type == NULL || Py_TYPE(type) == NULL) {
+    if (type == NULL) {
         PyErr_SetString(PyExc_TypeError, "PyType_GetSlot: type is NULL");
         return NULL;
     }
-    PyTypeObject *tp = type;
-    while (tp) {
-        switch (slot) {
-            case Py_tp_base: return (void*)tp->tp_base;
-            case Py_tp_bases: return (void*)tp->tp_bases;
-            case Py_tp_mro: return (void*)tp->tp_mro;
-            case Py_tp_dict: return (void*)tp->tp_dict;
-            case Py_tp_name: return (void*)tp->tp_name;
-            case Py_tp_doc: return (void*)tp->tp_doc;
-            case Py_tp_hash: return (void*)tp->tp_hash;
-            case Py_tp_call: return (void*)tp->tp_call;
-            case Py_tp_str: return (void*)tp->tp_str;
-            case Py_tp_getattr: return (void*)tp->tp_getattr;
-            case Py_tp_setattr: return (void*)tp->tp_setattr;
-            case Py_tp_repr: return (void*)tp->tp_repr;
-            case Py_tp_richcompare: return (void*)tp->tp_richcompare;
-            case Py_tp_iter: return (void*)tp->tp_iter;
-            case Py_tp_iternext: return (void*)tp->tp_iternext;
-            case Py_tp_descr_get: return (void*)tp->tp_descr_get;
-            case Py_tp_descr_set: return (void*)tp->tp_descr_set;
-            case Py_tp_init: return (void*)tp->tp_init;
-            case Py_tp_new: return (void*)tp->tp_new;
-            case Py_tp_del: return (void*)tp->tp_del;
-            case Py_tp_alloc: return (void*)tp->tp_alloc;
-            case Py_tp_free: return (void*)tp->tp_free;
-            case Py_tp_getattro: return (void*)tp->tp_getattro;
-            case Py_tp_setattro: return (void*)tp->tp_setattro;
-            case Py_tp_as_number: return (void*)tp->tp_as_number;
-            case Py_tp_as_sequence: return (void*)tp->tp_as_sequence;
-            case Py_tp_as_mapping: return (void*)tp->tp_as_mapping;
-            case Py_tp_flags: return (void*)(uintptr_t)tp->tp_flags;
-            default:
-                break;
-        }
-        tp = tp->tp_base;
+    PyNumberMethods *nb = type->tp_as_number;
+    PySequenceMethods *sq = type->tp_as_sequence;
+    PyMappingMethods *mp = type->tp_as_mapping;
+    PyAsyncMethods *am = type->tp_as_async;
+    switch (slot) {
+        case Py_mp_ass_subscript: return (void*)(mp ? mp->mp_ass_subscript : NULL);
+        case Py_mp_length: return (void*)(mp ? mp->mp_length : NULL);
+        case Py_mp_subscript: return (void*)(mp ? mp->mp_subscript : NULL);
+        case Py_nb_absolute: return (void*)(nb ? nb->nb_absolute : NULL);
+        case Py_nb_add: return (void*)(nb ? nb->nb_add : NULL);
+        case Py_nb_and: return (void*)(nb ? nb->nb_and : NULL);
+        case Py_nb_bool: return (void*)(nb ? nb->nb_bool : NULL);
+        case Py_nb_divmod: return (void*)(nb ? nb->nb_divmod : NULL);
+        case Py_nb_float: return (void*)(nb ? nb->nb_float : NULL);
+        case Py_nb_floor_divide: return (void*)(nb ? nb->nb_floor_divide : NULL);
+        case Py_nb_index: return (void*)(nb ? nb->nb_index : NULL);
+        case Py_nb_inplace_add: return (void*)(nb ? nb->nb_inplace_add : NULL);
+        case Py_nb_inplace_and: return (void*)(nb ? nb->nb_inplace_and : NULL);
+        case Py_nb_inplace_floor_divide: return (void*)(nb ? nb->nb_inplace_floor_divide : NULL);
+        case Py_nb_inplace_lshift: return (void*)(nb ? nb->nb_inplace_lshift : NULL);
+        case Py_nb_inplace_multiply: return (void*)(nb ? nb->nb_inplace_multiply : NULL);
+        case Py_nb_inplace_or: return (void*)(nb ? nb->nb_inplace_or : NULL);
+        case Py_nb_inplace_power: return (void*)(nb ? nb->nb_inplace_power : NULL);
+        case Py_nb_inplace_remainder: return (void*)(nb ? nb->nb_inplace_remainder : NULL);
+        case Py_nb_inplace_rshift: return (void*)(nb ? nb->nb_inplace_rshift : NULL);
+        case Py_nb_inplace_subtract: return (void*)(nb ? nb->nb_inplace_subtract : NULL);
+        case Py_nb_inplace_true_divide: return (void*)(nb ? nb->nb_inplace_true_divide : NULL);
+        case Py_nb_inplace_xor: return (void*)(nb ? nb->nb_inplace_xor : NULL);
+        case Py_nb_int: return (void*)(nb ? nb->nb_int : NULL);
+        case Py_nb_invert: return (void*)(nb ? nb->nb_invert : NULL);
+        case Py_nb_lshift: return (void*)(nb ? nb->nb_lshift : NULL);
+        case Py_nb_multiply: return (void*)(nb ? nb->nb_multiply : NULL);
+        case Py_nb_negative: return (void*)(nb ? nb->nb_negative : NULL);
+        case Py_nb_or: return (void*)(nb ? nb->nb_or : NULL);
+        case Py_nb_positive: return (void*)(nb ? nb->nb_positive : NULL);
+        case Py_nb_power: return (void*)(nb ? nb->nb_power : NULL);
+        case Py_nb_remainder: return (void*)(nb ? nb->nb_remainder : NULL);
+        case Py_nb_rshift: return (void*)(nb ? nb->nb_rshift : NULL);
+        case Py_nb_subtract: return (void*)(nb ? nb->nb_subtract : NULL);
+        case Py_nb_true_divide: return (void*)(nb ? nb->nb_true_divide : NULL);
+        case Py_nb_xor: return (void*)(nb ? nb->nb_xor : NULL);
+        case Py_nb_matrix_multiply: return (void*)(nb ? nb->nb_matrix_multiply : NULL);
+        case Py_nb_inplace_matrix_multiply: return (void*)(nb ? nb->nb_inplace_matrix_multiply : NULL);
+        case Py_sq_ass_item: return (void*)(sq ? sq->sq_ass_item : NULL);
+        case Py_sq_concat: return (void*)(sq ? sq->sq_concat : NULL);
+        case Py_sq_contains: return (void*)(sq ? sq->sq_contains : NULL);
+        case Py_sq_inplace_concat: return (void*)(sq ? sq->sq_inplace_concat : NULL);
+        case Py_sq_inplace_repeat: return (void*)(sq ? sq->sq_inplace_repeat : NULL);
+        case Py_sq_item: return (void*)(sq ? sq->sq_item : NULL);
+        case Py_sq_length: return (void*)(sq ? sq->sq_length : NULL);
+        case Py_sq_repeat: return (void*)(sq ? sq->sq_repeat : NULL);
+        case Py_tp_alloc: return (void*)type->tp_alloc;
+        case Py_tp_base: return (void*)type->tp_base;
+        case Py_tp_bases: return (void*)type->tp_bases;
+        case Py_tp_call: return (void*)type->tp_call;
+        case Py_tp_clear: return (void*)type->tp_clear;
+        case Py_tp_dealloc: return (void*)type->tp_dealloc;
+        case Py_tp_del: return (void*)type->tp_del;
+        case Py_tp_descr_get: return (void*)type->tp_descr_get;
+        case Py_tp_descr_set: return (void*)type->tp_descr_set;
+        case Py_tp_doc: return (void*)type->tp_doc;
+        case Py_tp_getattr: return (void*)type->tp_getattr;
+        case Py_tp_getattro: return (void*)type->tp_getattro;
+        case Py_tp_hash: return (void*)type->tp_hash;
+        case Py_tp_init: return (void*)type->tp_init;
+        case Py_tp_is_gc: return (void*)type->tp_is_gc;
+        case Py_tp_iter: return (void*)type->tp_iter;
+        case Py_tp_iternext: return (void*)type->tp_iternext;
+        case Py_tp_methods: return (void*)type->tp_methods;
+        case Py_tp_mro: return (void*)type->tp_mro;
+        case Py_tp_name: return (void*)type->tp_name;
+        case Py_tp_new: return (void*)type->tp_new;
+        case Py_tp_repr: return (void*)type->tp_repr;
+        case Py_tp_richcompare: return (void*)type->tp_richcompare;
+        case Py_tp_setattr: return (void*)type->tp_setattr;
+        case Py_tp_setattro: return (void*)type->tp_setattro;
+        case Py_tp_str: return (void*)type->tp_str;
+        case Py_tp_traverse: return (void*)type->tp_traverse;
+        case Py_tp_members: return (void*)type->tp_members;
+        case Py_tp_getset: return (void*)type->tp_getset;
+        case Py_tp_free: return (void*)type->tp_free;
+        case Py_tp_dict: return (void*)type->tp_dict;
+        case Py_tp_as_number: return (void*)type->tp_as_number;
+        case Py_tp_as_sequence: return (void*)type->tp_as_sequence;
+        case Py_tp_as_mapping: return (void*)type->tp_as_mapping;
+        case Py_tp_as_async: return (void*)type->tp_as_async;
+        case Py_tp_flags: return (void*)(uintptr_t)type->tp_flags;
+#if Py_tp_finalize
+        case Py_tp_finalize: return (void*)type->tp_finalize;
+#endif
+        case Py_am_await: return (void*)(am ? am->am_await : NULL);
+        case Py_am_aiter: return (void*)(am ? am->am_aiter : NULL);
+        case Py_am_anext: return (void*)(am ? am->am_anext : NULL);
+        default: return NULL;
     }
-    return NULL;
 }
 #endif
 #endif /* _PYCAPI_COMPAT_PyType_GetSlot */
@@ -1697,50 +1671,104 @@ def fix_pytype_getslot(content):
     if "#ifndef PyType_GetSlot" not in content and "#if PY_VERSION_HEX < 0x030900A0" not in content:
         compat_block = '''
 #if PY_VERSION_HEX < 0x030900A0
-#include <stdint.h>
 static inline void* PyType_GetSlot(PyTypeObject *type, int slot)
 {
-    if (type == NULL || Py_TYPE(type) == NULL) {
+    if (type == NULL) {
         PyErr_SetString(PyExc_TypeError, "PyType_GetSlot: type is NULL");
         return NULL;
     }
-    PyTypeObject *tp = type;
-    while (tp) {
-        switch (slot) {
-            case Py_tp_base: return (void*)tp->tp_base;
-            case Py_tp_bases: return (void*)tp->tp_bases;
-            case Py_tp_mro: return (void*)tp->tp_mro;
-            case Py_tp_dict: return (void*)tp->tp_dict;
-            case Py_tp_name: return (void*)tp->tp_name;
-            case Py_tp_doc: return (void*)tp->tp_doc;
-            case Py_tp_hash: return (void*)tp->tp_hash;
-            case Py_tp_call: return (void*)tp->tp_call;
-            case Py_tp_str: return (void*)tp->tp_str;
-            case Py_tp_getattr: return (void*)tp->tp_getattr;
-            case Py_tp_setattr: return (void*)tp->tp_setattr;
-            case Py_tp_repr: return (void*)tp->tp_repr;
-            case Py_tp_richcompare: return (void*)tp->tp_richcompare;
-            case Py_tp_iter: return (void*)tp->tp_iter;
-            case Py_tp_iternext: return (void*)tp->tp_iternext;
-            case Py_tp_descr_get: return (void*)tp->tp_descr_get;
-            case Py_tp_descr_set: return (void*)tp->tp_descr_set;
-            case Py_tp_init: return (void*)tp->tp_init;
-            case Py_tp_new: return (void*)tp->tp_new;
-            case Py_tp_del: return (void*)tp->tp_del;
-            case Py_tp_alloc: return (void*)tp->tp_alloc;
-            case Py_tp_free: return (void*)tp->tp_free;
-            case Py_tp_getattro: return (void*)tp->tp_getattro;
-            case Py_tp_setattro: return (void*)tp->tp_setattro;
-            case Py_tp_as_number: return (void*)tp->tp_as_number;
-            case Py_tp_as_sequence: return (void*)tp->tp_as_sequence;
-            case Py_tp_as_mapping: return (void*)tp->tp_as_mapping;
-            case Py_tp_flags: return (void*)(uintptr_t)tp->tp_flags;
-            default:
-                break;
-        }
-        tp = tp->tp_base;
+    PyNumberMethods *nb = type->tp_as_number;
+    PySequenceMethods *sq = type->tp_as_sequence;
+    PyMappingMethods *mp = type->tp_as_mapping;
+    PyAsyncMethods *am = type->tp_as_async;
+    switch (slot) {
+        case Py_mp_ass_subscript: return (void*)(mp ? mp->mp_ass_subscript : NULL);
+        case Py_mp_length: return (void*)(mp ? mp->mp_length : NULL);
+        case Py_mp_subscript: return (void*)(mp ? mp->mp_subscript : NULL);
+        case Py_nb_absolute: return (void*)(nb ? nb->nb_absolute : NULL);
+        case Py_nb_add: return (void*)(nb ? nb->nb_add : NULL);
+        case Py_nb_and: return (void*)(nb ? nb->nb_and : NULL);
+        case Py_nb_bool: return (void*)(nb ? nb->nb_bool : NULL);
+        case Py_nb_divmod: return (void*)(nb ? nb->nb_divmod : NULL);
+        case Py_nb_float: return (void*)(nb ? nb->nb_float : NULL);
+        case Py_nb_floor_divide: return (void*)(nb ? nb->nb_floor_divide : NULL);
+        case Py_nb_index: return (void*)(nb ? nb->nb_index : NULL);
+        case Py_nb_inplace_add: return (void*)(nb ? nb->nb_inplace_add : NULL);
+        case Py_nb_inplace_and: return (void*)(nb ? nb->nb_inplace_and : NULL);
+        case Py_nb_inplace_floor_divide: return (void*)(nb ? nb->nb_inplace_floor_divide : NULL);
+        case Py_nb_inplace_lshift: return (void*)(nb ? nb->nb_inplace_lshift : NULL);
+        case Py_nb_inplace_multiply: return (void*)(nb ? nb->nb_inplace_multiply : NULL);
+        case Py_nb_inplace_or: return (void*)(nb ? nb->nb_inplace_or : NULL);
+        case Py_nb_inplace_power: return (void*)(nb ? nb->nb_inplace_power : NULL);
+        case Py_nb_inplace_remainder: return (void*)(nb ? nb->nb_inplace_remainder : NULL);
+        case Py_nb_inplace_rshift: return (void*)(nb ? nb->nb_inplace_rshift : NULL);
+        case Py_nb_inplace_subtract: return (void*)(nb ? nb->nb_inplace_subtract : NULL);
+        case Py_nb_inplace_true_divide: return (void*)(nb ? nb->nb_inplace_true_divide : NULL);
+        case Py_nb_inplace_xor: return (void*)(nb ? nb->nb_inplace_xor : NULL);
+        case Py_nb_int: return (void*)(nb ? nb->nb_int : NULL);
+        case Py_nb_invert: return (void*)(nb ? nb->nb_invert : NULL);
+        case Py_nb_lshift: return (void*)(nb ? nb->nb_lshift : NULL);
+        case Py_nb_multiply: return (void*)(nb ? nb->nb_multiply : NULL);
+        case Py_nb_negative: return (void*)(nb ? nb->nb_negative : NULL);
+        case Py_nb_or: return (void*)(nb ? nb->nb_or : NULL);
+        case Py_nb_positive: return (void*)(nb ? nb->nb_positive : NULL);
+        case Py_nb_power: return (void*)(nb ? nb->nb_power : NULL);
+        case Py_nb_remainder: return (void*)(nb ? nb->nb_remainder : NULL);
+        case Py_nb_rshift: return (void*)(nb ? nb->nb_rshift : NULL);
+        case Py_nb_subtract: return (void*)(nb ? nb->nb_subtract : NULL);
+        case Py_nb_true_divide: return (void*)(nb ? nb->nb_true_divide : NULL);
+        case Py_nb_xor: return (void*)(nb ? nb->nb_xor : NULL);
+        case Py_nb_matrix_multiply: return (void*)(nb ? nb->nb_matrix_multiply : NULL);
+        case Py_nb_inplace_matrix_multiply: return (void*)(nb ? nb->nb_inplace_matrix_multiply : NULL);
+        case Py_sq_ass_item: return (void*)(sq ? sq->sq_ass_item : NULL);
+        case Py_sq_concat: return (void*)(sq ? sq->sq_concat : NULL);
+        case Py_sq_contains: return (void*)(sq ? sq->sq_contains : NULL);
+        case Py_sq_inplace_concat: return (void*)(sq ? sq->sq_inplace_concat : NULL);
+        case Py_sq_inplace_repeat: return (void*)(sq ? sq->sq_inplace_repeat : NULL);
+        case Py_sq_item: return (void*)(sq ? sq->sq_item : NULL);
+        case Py_sq_length: return (void*)(sq ? sq->sq_length : NULL);
+        case Py_sq_repeat: return (void*)(sq ? sq->sq_repeat : NULL);
+        case Py_tp_alloc: return (void*)type->tp_alloc;
+        case Py_tp_base: return (void*)type->tp_base;
+        case Py_tp_bases: return (void*)type->tp_bases;
+        case Py_tp_call: return (void*)type->tp_call;
+        case Py_tp_clear: return (void*)type->tp_clear;
+        case Py_tp_dealloc: return (void*)type->tp_dealloc;
+        case Py_tp_del: return (void*)type->tp_del;
+        case Py_tp_descr_get: return (void*)type->tp_descr_get;
+        case Py_tp_descr_set: return (void*)type->tp_descr_set;
+        case Py_tp_doc: return (void*)type->tp_doc;
+        case Py_tp_getattr: return (void*)type->tp_getattr;
+        case Py_tp_getattro: return (void*)type->tp_getattro;
+        case Py_tp_hash: return (void*)type->tp_hash;
+        case Py_tp_init: return (void*)type->tp_init;
+        case Py_tp_is_gc: return (void*)type->tp_is_gc;
+        case Py_tp_iter: return (void*)type->tp_iter;
+        case Py_tp_iternext: return (void*)type->tp_iternext;
+        case Py_tp_methods: return (void*)type->tp_methods;
+        case Py_tp_mro: return (void*)type->tp_mro;
+        case Py_tp_name: return (void*)type->tp_name;
+        case Py_tp_new: return (void*)type->tp_new;
+        case Py_tp_repr: return (void*)type->tp_repr;
+        case Py_tp_richcompare: return (void*)type->tp_richcompare;
+        case Py_tp_setattr: return (void*)type->tp_setattr;
+        case Py_tp_setattro: return (void*)type->tp_setattro;
+        case Py_tp_str: return (void*)type->tp_str;
+        case Py_tp_traverse: return (void*)type->tp_traverse;
+        case Py_tp_members: return (void*)type->tp_members;
+        case Py_tp_getset: return (void*)type->tp_getset;
+        case Py_tp_free: return (void*)type->tp_free;
+        case Py_tp_dict: return (void*)type->tp_dict;
+        case Py_tp_as_number: return (void*)type->tp_as_number;
+        case Py_tp_as_sequence: return (void*)type->tp_as_sequence;
+        case Py_tp_as_mapping: return (void*)type->tp_as_mapping;
+        case Py_tp_as_async: return (void*)type->tp_as_async;
+        case Py_tp_flags: return (void*)(uintptr_t)type->tp_flags;
+        case Py_am_await: return (void*)(am ? am->am_await : NULL);
+        case Py_am_aiter: return (void*)(am ? am->am_aiter : NULL);
+        case Py_am_anext: return (void*)(am ? am->am_anext : NULL);
+        default: return NULL;
     }
-    return NULL;
 }
 #endif
 '''
@@ -1885,11 +1913,6 @@ def fix_pythoncapi_compat_static_conflicts(content):
         return content
 
     PY38_SYSTEM_HEADERS = {
-        'PyType_GetSlot': {
-            'version_check': r'#if\s+PY_VERSION_HEX\s*<\s*0x030900A2',
-            'new_version': '#if PY_VERSION_HEX < 0x03080000',
-            'comment': '// Python 3.8 already provides PyType_GetSlot in object.h',
-        },
         'PyModule_AddFunctions': {
             'version_check': r'#if\s+PY_VERSION_HEX\s*<\s*0x030900A5',
             'new_version': '#if PY_VERSION_HEX < 0x03080000',

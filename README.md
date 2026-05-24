@@ -27,9 +27,33 @@ We have successfully used this suite to backport major scientific computing and 
 | **NumPy** | 2.x (latest main) | Compiled & tested on Python 3.8 | [numpy_backport_py38](https://github.com/Lanurence666/numpy_backport_py38) |
 | **SciPy** | 1.x (latest main) | Compiled & tested on Python 3.8 | [scipy_backport_py38](https://github.com/Lanurence666/scipy_backport_py38) |
 | **PyTorch** | 2.13.0a0 (latest main) | Compiled & tested on Python 3.8 | [pytorch_backport_py38](https://github.com/Lanurence666/pytorch_backport_py38) |
-| **Transformers** | 4.x (latest main) | Compiled & tested on Python 3.8 | — |
+| **Transformers** | 5.8.0.dev0 (latest main) | Compiled & tested on Python 3.8 | — |
+| **HuggingFace Hub** | 1.17.0.dev0 (latest main) | Compiled & tested on Python 3.8 | — |
 
-Both projects were compiled with maximum optimization flags and released as installable wheels. PyTorch was installed in editable (development) mode for testing. Transformers was verified with full syntax compilation and import tests on Python 3.8.
+All projects were compiled with maximum optimization flags and released as installable wheels. PyTorch was installed in editable (development) mode for testing.
+
+### Transformers + HuggingFace Hub Test Results (Python 3.8)
+
+The latest **Transformers 5.8.0.dev0** and **HuggingFace Hub 1.17.0.dev0** were verified with comprehensive testing on Python 3.8.10 + PyTorch 2.13:
+
+**✅ Verified Functionality:**
+- Core imports: `AutoConfig`, `AutoTokenizer`, `AutoModel`, `AutoModelForCausalLM`, `AutoModelForSequenceClassification`
+- Specific models: `BertModel`, `BertTokenizer`, `GPT2Model`, `GPT2Tokenizer`, `T5Model`, `T5Config`, `LlamaConfig`
+- Model forward inference: BertModel, GPT2Model (with random tensors)
+- Config operations: `to_dict()`, `to_json_string()`, `from_dict()`, `for_model()`
+- Training infrastructure: `Trainer`, `TrainingArguments`, `pipeline`
+- Processors: `ProcessorMixin`, `FeatureExtractionMixin`, `ImageProcessingMixin`
+- HuggingFace Hub API: `HfApi`, `hf_hub_download`, `snapshot_download`
+
+**🔧 Additional Manual Fixes Required (beyond automated script):**
+- `match/case` → `if/elif` conversion (in huggingface_hub)
+- `isinstance(x, A|B)` → `isinstance(x, (A, B))` conversion
+- `from typing import Annotated` → `from typing_extensions import Annotated` (22 files)
+- `torch.distributed` conditional imports (for PyTorch builds without distributed support)
+- `functools.cached_property` fallback for Python 3.8
+- `get_type_hints()` try/except protection for PEP 585/604 annotations
+- `dataclass(kw_only=True)` conditional handling
+- Module-level PEP 585 type aliases in base classes (e.g., `OrderedDict[str, str | None]`)
 
 ## fix_py38_python.py — Python Source Fixes
 

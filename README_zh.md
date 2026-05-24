@@ -27,9 +27,33 @@
 | **NumPy** | 2.x（最新 main） | 在 Python 3.8 上编译并测试通过 | [numpy_backport_py38](https://github.com/Lanurence666/numpy_backport_py38) |
 | **SciPy** | 1.x（最新 main） | 在 Python 3.8 上编译并测试通过 | [scipy_backport_py38](https://github.com/Lanurence666/scipy_backport_py38) |
 | **PyTorch** | 2.13.0a0（最新 main） | 在 Python 3.8 上编译并测试通过 | [pytorch_backport_py38](https://github.com/Lanurence666/pytorch_backport_py38) |
-| **Transformers** | 4.x（最新 main） | 在 Python 3.8 上编译并测试通过 | — |
+| **Transformers** | 5.8.0.dev0（最新 main） | 在 Python 3.8 上编译并测试通过 | — |
+| **HuggingFace Hub** | 1.17.0.dev0（最新 main） | 在 Python 3.8 上编译并测试通过 | — |
 
-两个项目均以最大优化标志编译，并发布为可安装的 wheel 包。PyTorch 以可编辑（开发）模式安装进行测试。Transformers 在 Python 3.8 上完成了完整的语法编译和导入测试验证。
+所有项目均以最大优化标志编译，并发布为可安装的 wheel 包。PyTorch 以可编辑（开发）模式安装进行测试。
+
+### Transformers + HuggingFace Hub 测试结果（Python 3.8）
+
+最新的 **Transformers 5.8.0.dev0** 和 **HuggingFace Hub 1.17.0.dev0** 已在 Python 3.8.10 + PyTorch 2.13 环境下通过全面测试验证：
+
+**✅ 已验证功能：**
+- 核心导入：`AutoConfig`、`AutoTokenizer`、`AutoModel`、`AutoModelForCausalLM`、`AutoModelForSequenceClassification`
+- 具体模型：`BertModel`、`BertTokenizer`、`GPT2Model`、`GPT2Tokenizer`、`T5Model`、`T5Config`、`LlamaConfig`
+- 模型前向推理：BertModel、GPT2Model（随机张量）
+- Config 操作：`to_dict()`、`to_json_string()`、`from_dict()`、`for_model()`
+- 训练基础设施：`Trainer`、`TrainingArguments`、`pipeline`
+- 处理器：`ProcessorMixin`、`FeatureExtractionMixin`、`ImageProcessingMixin`
+- HuggingFace Hub API：`HfApi`、`hf_hub_download`、`snapshot_download`
+
+**🔧 需额外手动修复（超出自动脚本范围）：**
+- `match/case` → `if/elif` 转换（huggingface_hub 中）
+- `isinstance(x, A|B)` → `isinstance(x, (A, B))` 转换
+- `from typing import Annotated` → `from typing_extensions import Annotated`（22 个文件）
+- `torch.distributed` 条件导入（针对未启用分布式支持的 PyTorch 构建）
+- `functools.cached_property` Python 3.8 回退
+- `get_type_hints()` try/except 保护（PEP 585/604 注解）
+- `dataclass(kw_only=True)` 条件处理
+- 模块级 PEP 585 类型别名在基类中的使用（如 `OrderedDict[str, str | None]`）
 
 ## fix_py38_python.py — Python 源码修复
 

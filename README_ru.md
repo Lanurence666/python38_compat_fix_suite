@@ -27,9 +27,33 @@
 | **NumPy** | 2.x (последний main) | Скомпилирован и протестирован на Python 3.8 | [numpy_backport_py38](https://github.com/Lanurence666/numpy_backport_py38) |
 | **SciPy** | 1.x (последний main) | Скомпилирован и протестирован на Python 3.8 | [scipy_backport_py38](https://github.com/Lanurence666/scipy_backport_py38) |
 | **PyTorch** | 2.13.0a0 (последний main) | Скомпилирован и протестирован на Python 3.8 | [pytorch_backport_py38](https://github.com/Lanurence666/pytorch_backport_py38) |
-| **Transformers** | 4.x (последний main) | Скомпилирован и протестирован на Python 3.8 | — |
+| **Transformers** | 5.8.0.dev0 (последний main) | Скомпилирован и протестирован на Python 3.8 | — |
+| **HuggingFace Hub** | 1.17.0.dev0 (последний main) | Скомпилирован и протестирован на Python 3.8 | — |
 
-Оба проекта были скомпилированы с максимальными флагами оптимизации и выпущены как устанавливаемые wheel-пакеты. PyTorch был установлен в режиме редактирования (разработки) для тестирования. Transformers был проверен с полной компиляцией синтаксиса и тестами импорта на Python 3.8.
+Все проекты были скомпилированы с максимальными флагами оптимизации и выпущены как устанавливаемые wheel-пакеты. PyTorch был установлен в режиме редактирования (разработки) для тестирования.
+
+### Результаты тестирования Transformers + HuggingFace Hub (Python 3.8)
+
+Последние версии **Transformers 5.8.0.dev0** и **HuggingFace Hub 1.17.0.dev0** были проверены комплексным тестированием на Python 3.8.10 + PyTorch 2.13:
+
+**✅ Проверенная функциональность:**
+- Основные импорты: `AutoConfig`, `AutoTokenizer`, `AutoModel`, `AutoModelForCausalLM`, `AutoModelForSequenceClassification`
+- Конкретные модели: `BertModel`, `BertTokenizer`, `GPT2Model`, `GPT2Tokenizer`, `T5Model`, `T5Config`, `LlamaConfig`
+- Прямой проход моделей: BertModel, GPT2Model (со случайными тензорами)
+- Операции Config: `to_dict()`, `to_json_string()`, `from_dict()`, `for_model()`
+- Инфраструктура обучения: `Trainer`, `TrainingArguments`, `pipeline`
+- Процессоры: `ProcessorMixin`, `FeatureExtractionMixin`, `ImageProcessingMixin`
+- HuggingFace Hub API: `HfApi`, `hf_hub_download`, `snapshot_download`
+
+**🔧 Дополнительные ручные исправления (помимо автоматического скрипта):**
+- Конвертация `match/case` → `if/elif` (в huggingface_hub)
+- Конвертация `isinstance(x, A|B)` → `isinstance(x, (A, B))`
+- `from typing import Annotated` → `from typing_extensions import Annotated` (22 файла)
+- Условный импорт `torch.distributed` (для сборок PyTorch без поддержки распределённых вычислений)
+- Резервная реализация `functools.cached_property` для Python 3.8
+- Защита `get_type_hints()` через try/except (аннотации PEP 585/604)
+- Условная обработка `dataclass(kw_only=True)`
+- Использование PEP 585 псевдонимов типов на уровне модуля в базовых классах (например, `OrderedDict[str, str | None]`)
 
 ## fix_py38_python.py — Исправления исходного кода Python
 

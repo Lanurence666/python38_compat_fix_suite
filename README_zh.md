@@ -20,15 +20,16 @@
 
 ## 我们的成果
 
-我们已成功使用本套件将两个主要科学计算库回移至 Python 3.8：
+我们已成功使用本套件将主要科学计算和AI库回移至 Python 3.8：
 
 | 项目 | 版本 | 状态 | 仓库 |
 |------|------|------|------|
 | **NumPy** | 2.x（最新 main） | 在 Python 3.8 上编译并测试通过 | [numpy_backport_py38](https://github.com/Lanurence666/numpy_backport_py38) |
 | **SciPy** | 1.x（最新 main） | 在 Python 3.8 上编译并测试通过 | [scipy_backport_py38](https://github.com/Lanurence666/scipy_backport_py38) |
 | **PyTorch** | 2.13.0a0（最新 main） | 在 Python 3.8 上编译并测试通过 | [pytorch_backport_py38](https://github.com/Lanurence666/pytorch_backport_py38) |
+| **Transformers** | 4.x（最新 main） | 在 Python 3.8 上编译并测试通过 | — |
 
-两个项目均以最大优化标志编译，并发布为可安装的 wheel 包。PyTorch 以可编辑（开发）模式安装进行测试。
+两个项目均以最大优化标志编译，并发布为可安装的 wheel 包。PyTorch 以可编辑（开发）模式安装进行测试。Transformers 在 Python 3.8 上完成了完整的语法编译和导入测试验证。
 
 ## fix_py38_python.py — Python 源码修复
 
@@ -70,9 +71,26 @@
 | 32 | 类型别名联合 (`X: TypeAlias = A \| B`) | 3.10+ | 转换为 `X: TypeAlias = Union[A, B]`，自动导入 `Union` |
 | 33 | `dataclass(kw_only=True)` | 3.10+ | 移除 `kw_only` 参数 |
 | 34 | `inspect.get_annotations()` | 3.10+ | `try/except` 回退到手动注解提取 |
-| 35 | `TypeAliasType`（PEP 695） | 3.12+ | 转换为 `typing.TypeAlias` 赋值 |
+| 35 | `TypeAliasType`（PEP 695 `type X = Y`） | 3.12+ | 转换为 `typing.TypeAlias` 赋值 |
 | 36 | 运行时类型联合（注解外的 `X \| Y`） | 3.10+ | 在运行时求值位置转换为 `Union[X, Y]` |
 | 37 | PEP 604 非注解联合（类体、默认值） | 3.10+ | 转换为 `Union[X, Y]`，感知 `from __future__ import annotations` |
+| 38 | PEP 695 泛型类（`class X[T]:`） | PEP 695 / 3.12+ | 转换为 `Generic[T]` 基类 + `TypeVar` |
+| 39 | PEP 695 泛型函数（`def f[T]():`） | PEP 695 / 3.12+ | 转换为 `TypeVar`，必要时添加 `@overload` |
+| 40 | PEP 695 类型语句（`type X = Y`） | PEP 695 / 3.12+ | 转换为 `X: TypeAlias = Y` |
+| 41 | Lambda 装饰器（`@lambda x: x`） | 3.9+ 语法 | 包装为常规函数 |
+| 42 | `match`/`case` 语句 | PEP 634 / 3.10+ | 标记 TODO 注释（需手动改写为 `if/elif`） |
+| 43 | `typing` 3.11+ 功能（`NotRequired`、`TypeVarTuple` 等） | 3.11+ | `try/except` 回退到 `typing_extensions` |
+| 44 | `enum.StrEnum` | 3.11+ | `try/except` 回退并手动实现 |
+| 45 | `contextlib.chdir()` | 3.11+ | `try/except` 回退实现 |
+| 46 | `operator.call()` | 3.11+ | `try/except` 回退实现 |
+| 47 | `hashlib.file_digest()` | 3.11+ | `try/except` 回退实现 |
+| 48 | `collections.abc.Iterator[...]` 下标语法 | 3.9+ | 替换为 `typing.Iterator[...]` |
+| 49 | 正则标志合并（模块级常量中的 `re.X \| re.I` 等） | 3.11+ | 转换为 `re.compile()` 组合标志 |
+| 50 | `from __future__ import annotations` 位置修复 | — | 移至文件顶部（如果不是第一个导入） |
+| 51 | 导入重写后损坏的 `# noqa` 注释 | — | 清理过时的 `# noqa` 指令 |
+| 52 | 类型别名 PEP 585 + 604 组合（`X = dict[str, int \| str]`） | 3.9+ | 递归转换：`dict` → `Dict`，`\|` → `Union`，支持嵌套括号处理 |
+| 53 | 改进的字典合并变量检测（`self.kwargs \| other`） | 3.9+ | 检测带点变量名和 `kwargs` 风格变量进行字典合并转换 |
+| 54 | `ExceptionGroup` / `BaseExceptionGroup` | 3.11+ | `try/except` 回退到 `exceptiongroup` |
 
 ### Python 3.10–3.15 函数（仅检测，不自动修复）
 
@@ -93,9 +111,15 @@
 | `warnings.deprecated()` | 3.13+ | 无简单回退 |
 | `copy.replace()` | 3.13+ | 无简单回退 |
 | PEP 594 移除的模块 | 3.13 | 需手动迁移 |
+| `compression.zstd` | 3.15+ | 无回退 |
+| `concurrent` 解释器模块 | 3.14+ | 无回退 |
 | `annotationlib` | 3.14+ | 无回退 |
 | `frozendict` | 3.15+ | 无回退 |
 | `dbm.sqlite3` | 3.15+ | 无回退 |
+| `base64.z85` | 3.15+ | 无回退 |
+| `sentinel` | 3.14+ | 无回退 |
+| `profiling` 模块 | 3.15+ | 无回退 |
+| `typing` 3.13+ / 3.15+ 功能 | 3.13+ | 需手动检查 `typing_extensions` 版本 |
 
 ## fix_py38_c.py — C/C++ 源码修复
 

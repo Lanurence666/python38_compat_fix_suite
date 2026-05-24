@@ -20,15 +20,16 @@ Both scripts are **i18n-aware**: output messages are displayed in your system la
 
 ## Our Results
 
-We have successfully used this suite to backport two major scientific computing libraries to Python 3.8:
+We have successfully used this suite to backport major scientific computing and AI libraries to Python 3.8:
 
 | Project | Version | Status | Repository |
 |---------|---------|--------|------------|
 | **NumPy** | 2.x (latest main) | Compiled & tested on Python 3.8 | [numpy_backport_py38](https://github.com/Lanurence666/numpy_backport_py38) |
 | **SciPy** | 1.x (latest main) | Compiled & tested on Python 3.8 | [scipy_backport_py38](https://github.com/Lanurence666/scipy_backport_py38) |
 | **PyTorch** | 2.13.0a0 (latest main) | Compiled & tested on Python 3.8 | [pytorch_backport_py38](https://github.com/Lanurence666/pytorch_backport_py38) |
+| **Transformers** | 4.x (latest main) | Compiled & tested on Python 3.8 | — |
 
-Both projects were compiled with maximum optimization flags and released as installable wheels. PyTorch was installed in editable (development) mode for testing.
+Both projects were compiled with maximum optimization flags and released as installable wheels. PyTorch was installed in editable (development) mode for testing. Transformers was verified with full syntax compilation and import tests on Python 3.8.
 
 ## fix_py38_python.py — Python Source Fixes
 
@@ -70,9 +71,26 @@ Both projects were compiled with maximum optimization flags and released as inst
 | 32 | Type alias union (`X: TypeAlias = A \| B`) | 3.10+ | Convert to `X: TypeAlias = Union[A, B]` with auto `Union` import |
 | 33 | `dataclass(kw_only=True)` | 3.10+ | Remove `kw_only` parameter |
 | 34 | `inspect.get_annotations()` | 3.10+ | `try/except` fallback to manual annotation extraction |
-| 35 | `TypeAliasType` (PEP 695) | 3.12+ | Convert to `typing.TypeAlias` assignment |
+| 35 | `TypeAliasType` (PEP 695 `type X = Y`) | 3.12+ | Convert to `typing.TypeAlias` assignment |
 | 36 | Runtime type union (`X \| Y` outside annotations) | 3.10+ | Convert to `Union[X, Y]` at runtime-evaluated positions |
 | 37 | PEP 604 non-annotation union (class body, default values) | 3.10+ | Convert to `Union[X, Y]` with `from __future__ import annotations` awareness |
+| 38 | PEP 695 generic class (`class X[T]:`) | PEP 695 / 3.12+ | Convert to `Generic[T]` base class with `TypeVar` |
+| 39 | PEP 695 generic function (`def f[T]():`) | PEP 695 / 3.12+ | Convert to `TypeVar` with `@overload` where needed |
+| 40 | PEP 695 type statement (`type X = Y`) | PEP 695 / 3.12+ | Convert to `X: TypeAlias = Y` |
+| 41 | Lambda decorator (`@lambda x: x`) | 3.9+ syntax | Wrap in regular function |
+| 42 | `match`/`case` statement | PEP 634 / 3.10+ | Mark with TODO comment (requires manual rewrite as `if/elif`) |
+| 43 | `typing` 3.11+ features (`NotRequired`, `TypeVarTuple`, etc.) | 3.11+ | `try/except` fallback to `typing_extensions` |
+| 44 | `enum.StrEnum` | 3.11+ | `try/except` fallback with manual implementation |
+| 45 | `contextlib.chdir()` | 3.11+ | `try/except` fallback implementation |
+| 46 | `operator.call()` | 3.11+ | `try/except` fallback implementation |
+| 47 | `hashlib.file_digest()` | 3.11+ | `try/except` fallback implementation |
+| 48 | `collections.abc.Iterator[...]` subscripting | 3.9+ | Replace with `typing.Iterator[...]` |
+| 49 | Regex flag merge (`re.X \| re.I` etc. in module-level constants) | 3.11+ | Convert to `re.compile()` with combined flags |
+| 50 | `from __future__ import annotations` position fix | — | Move to top of file if not first import |
+| 51 | Broken `# noqa` comments after import rewrites | — | Clean up stale `# noqa` directives |
+| 52 | Type alias PEP 585 + 604 combined (`X = dict[str, int \| str]`) | 3.9+ | Recursive conversion: `dict` → `Dict`, `\|` → `Union`, with nested bracket handling |
+| 53 | Dict merge with improved variable detection (`self.kwargs \| other`) | 3.9+ | Detect dotted variable names and `kwargs`-style variables for dict merge conversion |
+| 54 | `ExceptionGroup` / `BaseExceptionGroup` | 3.11+ | `try/except` fallback to `exceptiongroup` |
 
 ### Python 3.10–3.15 Functions (Detected but NOT Auto-Fixed)
 
@@ -93,9 +111,15 @@ The script detects the following features but does **not** automatically fix the
 | `warnings.deprecated()` | 3.13+ | No simple fallback |
 | `copy.replace()` | 3.13+ | No simple fallback |
 | PEP 594 removed modules | 3.13 | Manual migration needed |
+| `compression.zstd` | 3.15+ | No fallback |
+| `concurrent` interpreters module | 3.14+ | No fallback |
 | `annotationlib` | 3.14+ | No fallback |
 | `frozendict` | 3.15+ | No fallback |
 | `dbm.sqlite3` | 3.15+ | No fallback |
+| `base64.z85` | 3.15+ | No fallback |
+| `sentinel` | 3.14+ | No fallback |
+| `profiling` module | 3.15+ | No fallback |
+| `typing` 3.13+ / 3.15+ features | 3.13+ | Requires manual `typing_extensions` version check |
 
 ## fix_py38_c.py — C/C++ Source Fixes
 

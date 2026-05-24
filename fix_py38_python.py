@@ -1014,10 +1014,12 @@ def fix_typing_311_plus(content):
 
 def fix_pep585_604(content):
     if "from __future__ import annotations" in content:
+        content = _fix_type_alias_pep585_604(content)
         return content
 
     pep585_types = {"list", "dict", "set", "frozenset", "tuple", "type"}
     needs_future = False
+    has_type_alias_pep = False
 
     for line in content.split("\n"):
         stripped = line.strip()
@@ -1029,6 +1031,9 @@ def fix_pep585_604(content):
                 if ":" in line or "->" in line or "def " in line or ("=" in line and "==" not in line):
                     needs_future = True
                     break
+                alias_m = re.match(r'^(\s*)(\w+)\s*(:\s*TypeAlias\s*)?=\s*(.+)$', line)
+                if alias_m:
+                    has_type_alias_pep = True
         if needs_future:
             break
 
@@ -1041,6 +1046,9 @@ def fix_pep585_604(content):
                 if ":" in line or "->" in line or "def " in line:
                     needs_future = True
                     break
+                alias_m = re.match(r'^(\s*)(\w+)\s*(:\s*TypeAlias\s*)?=\s*(.+)$', line)
+                if alias_m:
+                    has_type_alias_pep = True
 
     if needs_future:
         lines = content.split("\n")
@@ -1048,7 +1056,182 @@ def fix_pep585_604(content):
         lines.insert(insert_pos, "from __future__ import annotations")
         content = "\n".join(lines)
 
+    if has_type_alias_pep:
+        content = _fix_type_alias_pep585_604(content)
+
     return content
+
+
+def _fix_type_alias_pep585_604(content):
+    if 'from __future__ import annotations' not in content:
+        return content
+
+    pep585_map = {
+        "list": "List", "dict": "Dict", "tuple": "Tuple",
+        "set": "Set", "frozenset": "FrozenSet", "type": "Type",
+    }
+    needs_typing_imports = set()
+    lines = content.split('\n')
+    new_lines = []
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith('#') or stripped.startswith('"""') or stripped.startswith("'''"):
+            new_lines.append(line)
+            continue
+
+        m = re.match(r'^(\s*)(\w+)\s*(:\s*TypeAlias\s*)?=\s*(.+)$', stripped)
+        if not m:
+            new_lines.append(line)
+            continue
+
+        name = m.group(2)
+        value = m.group(4).rstrip()
+
+        if not _is_type_alias_name_for_fix(name):
+            new_lines.append(line)
+            continue
+
+        if not _is_type_expr_str(value):
+            new_lines.append(line)
+            continue
+
+        new_value = value
+        changed = False
+
+        for lower, upper in pep585_map.items():
+            if re.search(rf'\b{lower}\[', new_value):
+                new_value = re.sub(rf'\b{lower}\[', f'{upper}[', new_value)
+                needs_typing_imports.add(upper)
+                changed = True
+
+        if '|' in new_value and _has_pipe_in_type_expr(new_value):
+            new_value = _convert_pipe_to_union(new_value)
+            needs_typing_imports.add('Union')
+            changed = True
+
+        if changed:
+            indent = line[:len(line) - len(line.lstrip())]
+            type_alias_part = m.group(3) or ''
+            new_lines.append(f'{indent}{name}{type_alias_part}= {new_value}')
+        else:
+            new_lines.append(line)
+
+    if needs_typing_imports:
+        content = '\n'.join(new_lines)
+        for imp in sorted(needs_typing_imports):
+            content = _ensure_typing_import(content, imp)
+    else:
+        content = '\n'.join(new_lines)
+
+    return content
+
+
+def _is_type_alias_name_for_fix(name):
+    if len(name) <= 1:
+        return False
+    common_non_alias = {
+        "REPO_PATH", "PATH", "ROOT", "DIR", "HOME", "BASE_DIR", "SRC_DIR",
+        "OUT_DIR", "LOG_DIR", "MAX", "MIN", "NUM", "SIZE", "DIM", "LEN",
+        "IDX", "ID", "SESSION_ID", "CURRENT_YEAR",
+    }
+    if name in common_non_alias:
+        return False
+    if name.startswith("_") and any(c.isupper() for c in name[1:]):
+        return True
+    if name[0].isupper() and any(c.islower() for c in name[1:]):
+        return True
+    return False
+
+
+def _is_type_expr_str(value):
+    type_keywords = {
+        'None', 'Ellipsis', 'Any', 'Union', 'Optional', 'List', 'Dict',
+        'Tuple', 'Set', 'FrozenSet', 'Type', 'Callable', 'Iterator',
+        'Iterable', 'Sequence', 'Mapping', 'MutableMapping', 'MutableSequence',
+        'MutableSet', 'Container', 'Collection', 'Reversible', 'Awaitable',
+        'AsyncIterator', 'AsyncIterable', 'Coroutine', 'AsyncGenerator',
+        'Generator', 'ContextManager', 'AsyncContextManager', 'TypeVar',
+        'TypeAlias', 'Protocol', 'Literal', 'Final', 'ClassVar',
+        'float', 'int', 'str', 'bool', 'bytes', 'complex',
+        'list', 'dict', 'tuple', 'set', 'frozenset', 'type',
+    }
+    tokens = re.split(r'[\s\[\],|()]', value)
+    non_empty = [t for t in tokens if t and t not in ('', '*',)]
+    if not non_empty:
+        return False
+    for token in non_empty:
+        if token in type_keywords:
+            return True
+        if token[0].isupper():
+            return True
+        if '.' in token:
+            return True
+    return False
+
+
+def _is_type_union_expr(value):
+    depth = 0
+    in_string = False
+    string_char = None
+    i = 0
+    while i < len(value):
+        ch = value[i]
+        if in_string:
+            if ch == '\\' and i + 1 < len(value):
+                i += 2
+                continue
+            if ch == string_char:
+                in_string = False
+            i += 1
+            continue
+        if ch in ('"', "'"):
+            in_string = True
+            string_char = ch
+            i += 1
+            continue
+        if ch in '([':
+            depth += 1
+        elif ch in ')]':
+            depth -= 1
+        elif ch == '|' and depth == 0:
+            if i + 1 < len(value) and value[i + 1] == '|':
+                i += 2
+                continue
+            left = value[:i].strip()
+            right = value[i + 1:].strip()
+            if left and right:
+                return True
+        i += 1
+    return False
+
+
+def _has_pipe_in_type_expr(value):
+    in_string = False
+    string_char = None
+    i = 0
+    while i < len(value):
+        ch = value[i]
+        if in_string:
+            if ch == '\\' and i + 1 < len(value):
+                i += 2
+                continue
+            if ch == string_char:
+                in_string = False
+            i += 1
+            continue
+        if ch in ('"', "'"):
+            in_string = True
+            string_char = ch
+            i += 1
+            continue
+        if ch == '|':
+            if i + 1 < len(value) and value[i + 1] == '|':
+                i += 2
+                continue
+            return True
+        i += 1
+    return False
 
 
 def _find_future_import_position(lines):
@@ -1911,7 +2094,7 @@ def _looks_like_dict_literal(expr):
 
 def _looks_like_dict_variable(expr):
     expr = expr.strip()
-    if re.match(r'^[a-z_]\w*$', expr):
+    if re.match(r'^[a-z_]\w*(\.[a-z_]\w*)*$', expr):
         dict_hints = ('dict', 'map', 'config', 'option', 'param', 'env',
                       'data', 'info', 'meta', 'header', 'cache', 'result',
                       'context', 'state', 'props', 'attr', 'field', 'entry',
@@ -1922,6 +2105,17 @@ def _looks_like_dict_variable(expr):
         name_lower = expr.lower()
         for hint in dict_hints:
             if hint in name_lower:
+                return True
+    if re.match(r'^self\.[a-z_]\w*$', expr):
+        attr = expr.split('.')[1].lower()
+        dict_hints = ('dict', 'map', 'config', 'option', 'param', 'env',
+                      'data', 'info', 'meta', 'header', 'cache', 'result',
+                      'context', 'state', 'props', 'attr', 'field', 'entry',
+                      'record', 'item', 'setting', 'var', 'kwarg', 'kwargs',
+                      'defaults', 'override', 'base', 'extra', 'update',
+                      'merged', 'combined', 'new_dict', 'old_dict')
+        for hint in dict_hints:
+            if hint in attr:
                 return True
     return False
 
@@ -3750,62 +3944,11 @@ def fix_exception_group(content):
         if 'ExceptionGroup' in line and 'exceptiongroup' not in line.lower() and '_ExceptionGroup_compat' not in line:
             if re.search(r'\bExceptionGroup\b', line) and not line.strip().startswith('#'):
                 if 'from builtins import' not in line and 'import exceptiongroup' not in line:
-                    line = re.sub(r'\bExceptionGroup\b', '_ExceptionGroup_compat', line)
+                    line = re.sub(r'\bExceptionGroup\b', 'BaseExceptionGroup if hasattr(__builtins__, "ExceptionGroup") else __import__("exceptiongroup").BaseExceptionGroup', line)
                     needs_compat = True
         new_lines.append(line)
 
-    if needs_compat and '_ExceptionGroup_compat' not in content:
-
-        compat_code = (
-
-            "try:\n"
-
-            "    from builtins import ExceptionGroup as _ExceptionGroup_compat\n"
-
-            "except ImportError:\n"
-
-            "    try:\n"
-
-            "        from exceptiongroup import ExceptionGroup as _ExceptionGroup_compat\n"
-
-            "    except ImportError:\n"
-
-            "        class _ExceptionGroup_compat(Exception):\n"
-
-            "            def __init__(self, message, exceptions):\n"
-
-            "                super().__init__(message)\n"
-
-            "                self.exceptions = tuple(exceptions)\n"
-
-            "            def derive(self, excs):\n"
-
-            "                return type(self)(self.args[0], excs)\n"
-
-            "            def split(self, condition):\n"
-
-            "                match = [e for e in self.exceptions if condition(e)]\n"
-
-            "                rest = [e for e in self.exceptions if not condition(e)]\n"
-
-            "                return type(self)(self.args[0], match), type(self)(self.args[0], rest)\n"
-
-            "            @property\n"
-
-            "            def message(self):\n"
-
-            "                return self.args[0]\n"
-
-        )
-
-        insert_pos = _find_compat_insert_position(new_lines)
-
-        new_lines.insert(insert_pos, compat_code.rstrip())
-
-
-
     return '\n'.join(new_lines)
-
 
 
 def fix_attribute_error_kwargs(content):
@@ -4094,47 +4237,6 @@ def fix_cmake_python_version(root):
     return modified
 
 
-
-def fix_importlib_resources(content):
-    if "importlib.resources" not in content and "importlib_resources" not in content:
-        return content
-
-    if "from importlib.resources import files" not in content and "importlib.resources.files" not in content and ".files(" not in content:
-        return content
-
-    needs_compat = False
-    lines = content.split("\n")
-    new_lines = []
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("#"):
-            new_lines.append(line)
-            continue
-
-        if "importlib.resources.files(" in line and "_importlib_resources_files_compat" not in line:
-            line = line.replace("importlib.resources.files(", "_importlib_resources_files_compat(")
-            needs_compat = True
-        elif ".files(" in line and "importlib" in line and "resources" in line and "_importlib_resources_files_compat" not in line:
-            line = re.sub(r"(\w+)\.files\(", r"_importlib_resources_files_compat(", line)
-            needs_compat = True
-
-        new_lines.append(line)
-
-    if needs_compat and "_importlib_resources_files_compat" not in content:
-        compat_code = (
-            "try:\n"
-            "    from importlib.resources import files as _importlib_resources_files_compat\n"
-            "except ImportError:\n"
-            "    def _importlib_resources_files_compat(package):\n"
-            "        import importlib.resources\n"
-            "        return importlib.resources.path(package, \"\")\n"
-        )
-        insert_pos = _find_compat_insert_position(new_lines)
-        new_lines.insert(insert_pos, compat_code.rstrip())
-
-    return "\n".join(new_lines)
-
-
 def fix_collections_abc_callable_subscript(content):
     if 'from collections.abc import' not in content:
         return content
@@ -4194,209 +4296,6 @@ def fix_collections_abc_callable_subscript(content):
 
     return content
 
-
-
-
-def fix_runtime_builtin_generics(content):
-    if 'from __future__ import annotations' in content:
-        return content
-
-    builtin_generic_map = {
-        'tuple': 'Tuple',
-        'list': 'List',
-        'dict': 'Dict',
-        'set': 'Set',
-        'frozenset': 'FrozenSet',
-        'type': 'Type',
-    }
-
-    has_builtin_generic = False
-    for bg in builtin_generic_map:
-        if re.search(r'\b' + bg + r'\s*\[', content):
-            if bg == 'type' and re.search(r'\btype\s*\[\s*type\s*\]', content):
-                continue
-            has_builtin_generic = True
-            break
-
-    if not has_builtin_generic:
-        return content
-
-    lines = content.split('\n')
-    new_lines = []
-    needs_typing_imports = set()
-
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith('#') or stripped.startswith('"""') or stripped.startswith("'''"):
-            new_lines.append(line)
-            continue
-
-        if stripped.startswith('from ') or stripped.startswith('import '):
-            new_lines.append(line)
-            continue
-
-        if stripped.startswith('class ') or stripped.startswith('def '):
-            new_lines.append(line)
-            continue
-
-        if stripped.startswith('@'):
-            new_lines.append(line)
-            continue
-
-        if re.search(r'^\s*\w+\s*:\s*', stripped) and '=' not in stripped:
-            new_lines.append(line)
-            continue
-
-        new_line = line
-        for bg, cap_name in builtin_generic_map.items():
-            pattern = r'\b' + bg + r'\s*\['
-            if re.search(pattern, new_line):
-                if bg == 'type':
-                    if re.search(r'\btype\s*\[\s*type\s*\]', new_line):
-                        continue
-                    if re.search(r'\btype\s*\[\s*[' + '"' + "'" + r']', new_line):
-                        continue
-
-                def _make_bg_replacer(name, builtin):
-                    def _replacer(m):
-                        inner = m.group(1)
-                        return f'{name}[{inner}]'
-                    return _replacer
-                new_line = re.sub(r'\b' + bg + r'\s*\[([^\]]+)\]', _make_bg_replacer(cap_name, bg), new_line)
-                needs_typing_imports.add(cap_name)
-
-        new_lines.append(new_line)
-
-    if needs_typing_imports:
-        content = '\n'.join(new_lines)
-        content = _ensure_typing_imports(content, needs_typing_imports)
-    else:
-        content = '\n'.join(new_lines)
-
-    return content
-
-
-def _ensure_typing_imports(content, names):
-    names = set(names)
-    m = re.search(r'^from typing import (.+)$', content, re.MULTILINE)
-    if m:
-        existing = {x.strip().split(' as ')[0].split('[')[0].strip() for x in m.group(1).split(',')}
-        missing = names - existing
-        if missing:
-            imports = [x.strip() for x in m.group(1).split(',')]
-            for n in sorted(missing):
-                if n not in imports:
-                    imports.append(n)
-            content = content.replace(m.group(0), f'from typing import {", ".join(imports)}', 1)
-    else:
-        lines = content.split('\n')
-        insert_pos = 0
-        for i, line in enumerate(lines):
-            if line.startswith('from ') or line.startswith('import '):
-                insert_pos = i + 1
-            elif line.strip() and not line.startswith('#') and not line.startswith('"""') and not line.startswith("'''"):
-                break
-        lines.insert(insert_pos, f'from typing import {", ".join(sorted(names))}')
-        content = '\n'.join(lines)
-    return content
-
-
-def fix_pytorch_nan_assignment(content):
-    if 'torch' not in content:
-        return content
-    if 'float("nan")' not in content and "float('nan')" not in content:
-        return content
-
-    has_torch_import = bool(re.search(r'^import torch\b|^from torch\b', content, re.MULTILINE))
-    if not has_torch_import:
-        if not re.search(r'\btorch\.\w+', content):
-            return content
-
-    modified = False
-    lines = content.split('\n')
-    new_lines = []
-
-    for line in lines:
-        new_line = line
-
-        patterns = [
-            (r'(\w+)\s*=\s*torch\.tensor\s*\(\s*float\s*\(\s*["\']nan["\']\s*\)\s*,\s*dtype\s*=\s*(\w+)\.dtype\s*,\s*device\s*=\s*(\w+)\.device\s*\)',
-             r'\1 = torch.from_numpy(np.array(np.nan, dtype=\2.cpu().numpy().dtype)).to(\3.device)'),
-            (r'(\w+)\s*=\s*torch\.tensor\s*\(\s*float\s*\(\s*["\']nan["\']\s*\)\s*,\s*device\s*=\s*(\w+)\.device\s*,\s*dtype\s*=\s*(\w+)\.dtype\s*\)',
-             r'\1 = torch.from_numpy(np.array(np.nan, dtype=\3.cpu().numpy().dtype)).to(\2.device)'),
-            (r'(\w+)\s*=\s*torch\.tensor\s*\(\s*float\s*\(\s*["\']nan["\']\s*\)\s*,\s*device\s*=\s*(\w+)\.device\s*\)',
-             r'\1 = torch.from_numpy(np.array(np.nan)).to(\2.device)'),
-            (r'(\w+)\s*=\s*torch\.tensor\s*\(\s*float\s*\(\s*["\']nan["\']\s*\)\s*\)',
-             r'\1 = torch.from_numpy(np.array(np.nan))'),
-        ]
-
-        for pattern, replacement in patterns:
-            if re.search(pattern, new_line):
-                new_line = re.sub(pattern, replacement, new_line)
-                modified = True
-                break
-
-        if new_line == line:
-            fill_patterns = [
-                (r'(\w+)\[\s*:\s*\]\s*=\s*float\s*\(\s*["\']nan["\']\s*\)',
-                 None),
-                (r'(\w+)\s*=\s*torch\.zeros_like\s*\(\s*(\w+)\s*\)\s*;\s*\1\s*\[\s*:\s*\]\s*=\s*float\s*\(\s*["\']nan["\']\s*\)',
-                 None),
-            ]
-
-            for pattern, _ in fill_patterns:
-                m = re.search(pattern, new_line)
-                if m:
-                    if 'zeros_like' in new_line:
-                        m2 = re.match(r'^(\s*)(\w+)\s*=\s*torch\.zeros_like\s*\(\s*(\w+)\s*\)\s*;\s*\2\s*\[\s*:\s*\]\s*=\s*float\s*\(\s*["\']nan["\']\s*\)\s*$', new_line)
-                        if m2:
-                            indent = m2.group(1)
-                            var = m2.group(2)
-                            ref = m2.group(3)
-                            new_line = f'{indent}{var} = torch.from_numpy(np.full({ref}.shape, np.nan, dtype={ref}.cpu().numpy().dtype)).to({ref}.device)'
-                            modified = True
-                    else:
-                        m3 = re.match(r'^(\s*)(\w+)\[\s*:\s*\]\s*=\s*float\s*\(\s*["\']nan["\']\s*\)\s*$', new_line)
-                        if m3:
-                            indent = m3.group(1)
-                            var = m3.group(2)
-                            new_line = f'{indent}{var}[:] = torch.from_numpy(np.array(np.nan)).to({var}.device).item()'
-                            modified = True
-                    break
-
-        if new_line == line:
-            if re.search(r'torch\.full\s*\([^)]*float\s*\(\s*["\']nan["\']\s*\)', new_line):
-                m = re.search(r'torch\.full\s*\(\s*([^,]+)\s*,\s*float\s*\(\s*["\']nan["\']\s*\)\s*(?:,\s*dtype\s*=\s*(\w+)(?:\.dtype)?)?\s*(?:,\s*device\s*=\s*(\w+)(?:\.device)?)?\s*\)', new_line)
-                if m:
-                    shape = m.group(1).strip()
-                    dtype_var = m.group(2)
-                    device_var = m.group(3)
-                    if dtype_var and device_var:
-                        new_line = new_line[:m.start()] + f'torch.from_numpy(np.full({shape}, np.nan, dtype={dtype_var}.cpu().numpy().dtype)).to({device_var}.device)' + new_line[m.end():]
-                    elif device_var:
-                        new_line = new_line[:m.start()] + f'torch.from_numpy(np.full({shape}, np.nan)).to({device_var}.device)' + new_line[m.end():]
-                    else:
-                        new_line = new_line[:m.start()] + f'torch.from_numpy(np.full({shape}, np.nan))' + new_line[m.end():]
-                    modified = True
-
-        new_lines.append(new_line)
-
-    if modified:
-        content = '\n'.join(new_lines)
-        if 'import numpy as np' not in content:
-            has_np = bool(re.search(r'^import numpy\b', content, re.MULTILINE))
-            if not has_np:
-                lines = content.split('\n')
-                insert_pos = 0
-                for i, line in enumerate(lines):
-                    if line.startswith('import ') or line.startswith('from '):
-                        insert_pos = i + 1
-                    elif line.strip() and not line.startswith('#') and not line.startswith('"""') and not line.startswith("'''"):
-                        break
-                lines.insert(insert_pos, 'import numpy as np')
-                content = '\n'.join(lines)
-
-    return content
 
 def fix_lru_cached_property(content):
     if 'from functools import lru_cached_property' not in content:
@@ -4884,8 +4783,6 @@ def fix_type_alias_union(content):
         return content
     if '|' not in content:
         return content
-    if 'TypeAlias' not in content:
-        return content
 
     needs_union = False
     lines = content.split('\n')
@@ -4902,12 +4799,26 @@ def fix_type_alias_union(content):
             indent = m.group(1)
             name = m.group(2)
             value = m.group(3).rstrip()
-            if '|' in value and not re.search(r're\.\w+\s*\|', value):
-                if not re.search(r'\b0x[0-9a-fA-F]+\s*\|', value):
-                    value = _convert_pipe_to_union(value)
-                    needs_union = True
+            if '|' in value and _has_pipe_in_type_expr(value):
+                if not re.search(r're\.\w+\s*\|', value):
+                    if not re.search(r'\b0x[0-9a-fA-F]+\s*\|', value):
+                        value = _convert_pipe_to_union(value)
+                        needs_union = True
             new_lines.append(f'{indent}{name}: TypeAlias = {value}')
             continue
+
+        m2 = re.match(r'^(\s*)(\w+)\s*=\s*(.+)$', stripped)
+        if m2 and '|' in stripped:
+            name = m2.group(2)
+            value = m2.group(3).rstrip()
+            if _is_type_alias_name_for_fix(name) and _is_type_expr_str(value) and _has_pipe_in_type_expr(value):
+                if not re.search(r're\.\w+\s*\|', value):
+                    if not re.search(r'\b0x[0-9a-fA-F]+\s*\|', value):
+                        value = _convert_pipe_to_union(value)
+                        needs_union = True
+                        indent = line[:len(line) - len(line.lstrip())]
+                        new_lines.append(f'{indent}{name} = {value}')
+                        continue
 
         new_lines.append(line)
 
@@ -4921,9 +4832,50 @@ def fix_type_alias_union(content):
 
 
 def _convert_pipe_to_union(expr):
-    parts = []
+    expr = _convert_pipe_to_union_recursive(expr)
+    return expr
+
+
+def _convert_pipe_to_union_recursive(expr):
+    has_pipe = False
     depth = 0
+    in_string = False
+    string_char = None
+    i = 0
+    while i < len(expr):
+        ch = expr[i]
+        if in_string:
+            if ch == '\\' and i + 1 < len(expr):
+                i += 2
+                continue
+            if ch == string_char:
+                in_string = False
+            i += 1
+            continue
+        if ch in ('"', "'"):
+            in_string = True
+            string_char = ch
+            i += 1
+            continue
+        if ch in '([':
+            depth += 1
+        elif ch in ')]':
+            depth -= 1
+        elif ch == '|' and depth == 0:
+            if i + 1 < len(expr) and expr[i + 1] == '|':
+                i += 2
+                continue
+            has_pipe = True
+            break
+        i += 1
+
+    if not has_pipe:
+        result = _recursive_convert_brackets(expr)
+        return result
+
+    parts = []
     current = []
+    depth = 0
     in_string = False
     string_char = None
     i = 0
@@ -4933,6 +4885,115 @@ def _convert_pipe_to_union(expr):
             current.append(ch)
             if ch == '\\' and i + 1 < len(expr):
                 current.append(expr[i + 1])
+                i += 2
+                continue
+            if ch == string_char:
+                in_string = False
+            i += 1
+            continue
+        if ch in ('"', "'"):
+            in_string = True
+            string_char = ch
+            current.append(ch)
+            i += 1
+            continue
+        if ch == '[':
+            bracket_content = _extract_bracket(expr, i)
+            inner = bracket_content[1:-1]
+            converted_inner = _convert_type_params(inner)
+            current.append('[' + converted_inner + ']')
+            i += len(bracket_content)
+            continue
+        if ch in '(':
+            depth += 1
+            current.append(ch)
+            i += 1
+            continue
+        if ch in ')':
+            depth -= 1
+            current.append(ch)
+            i += 1
+            continue
+        if ch == '|' and depth == 0:
+            if i + 1 < len(expr) and expr[i + 1] == '|':
+                current.append('||')
+                i += 2
+                continue
+            parts.append(''.join(current).strip())
+            current = []
+            i += 1
+            continue
+        current.append(ch)
+        i += 1
+    if current:
+        parts.append(''.join(current).strip())
+
+    if len(parts) <= 1:
+        if parts and parts[0] != expr:
+            return parts[0]
+        return expr
+
+    return 'Union[' + ', '.join(parts) + ']'
+
+
+def _extract_bracket(expr, start):
+    depth = 0
+    i = start
+    while i < len(expr):
+        ch = expr[i]
+        if ch == '[':
+            depth += 1
+        elif ch == ']':
+            depth -= 1
+            if depth == 0:
+                return expr[start:i + 1]
+        i += 1
+    return expr[start:]
+
+
+def _recursive_convert_brackets(expr):
+    result = []
+    i = 0
+    while i < len(expr):
+        ch = expr[i]
+        if ch == '[':
+            bracket = _extract_bracket(expr, i)
+            inner = bracket[1:-1]
+            converted_inner = _convert_type_params(inner)
+            result.append('[' + converted_inner + ']')
+            i += len(bracket)
+            continue
+        result.append(ch)
+        i += 1
+    return ''.join(result)
+
+
+def _convert_type_params(inner):
+    params = _split_type_params(inner)
+    converted = []
+    for param in params:
+        param = param.strip()
+        if not param:
+            converted.append(param)
+            continue
+        converted_param = _convert_pipe_to_union_recursive(param)
+        converted.append(converted_param)
+    return ', '.join(converted)
+
+
+def _split_type_params(inner):
+    params = []
+    depth = 0
+    current = []
+    in_string = False
+    string_char = None
+    i = 0
+    while i < len(inner):
+        ch = inner[i]
+        if in_string:
+            current.append(ch)
+            if ch == '\\' and i + 1 < len(inner):
+                current.append(inner[i + 1])
                 i += 2
                 continue
             if ch == string_char:
@@ -4955,24 +5016,16 @@ def _convert_pipe_to_union(expr):
             current.append(ch)
             i += 1
             continue
-        if ch == '|' and depth == 0:
-            if i + 1 < len(expr) and expr[i + 1] == '|':
-                current.append('||')
-                i += 2
-                continue
-            parts.append(''.join(current).strip())
+        if ch == ',' and depth == 0:
+            params.append(''.join(current))
             current = []
             i += 1
             continue
         current.append(ch)
         i += 1
     if current:
-        parts.append(''.join(current).strip())
-
-    if len(parts) <= 1:
-        return expr
-
-    return 'Union[' + ', '.join(parts) + ']'
+        params.append(''.join(current))
+    return params
 
 
 def _ensure_typing_import(content, name):
@@ -5185,6 +5238,22 @@ def fix_runtime_type_union(content):
                 new_lines.append(f'{prefix}{value},')
                 continue
 
+        runtime_cmp = re.search(r'(\w+(?:\.\w+)*)\s*==\s*(\w+(?:\.\w+)*)\s*\|\s*(\w+(?:\.\w+)*)', stripped)
+        if runtime_cmp:
+            full_match = runtime_cmp.group(0)
+            left_var = runtime_cmp.group(1)
+            right_a = runtime_cmp.group(2)
+            right_b = runtime_cmp.group(3)
+            type_primitives = ('None', 'int', 'str', 'bool', 'float', 'bytes',
+                               'list', 'dict', 'tuple', 'set', 'frozenset', 'type')
+            if right_a[0].isupper() or right_a in type_primitives:
+                if right_b[0].isupper() or right_b in type_primitives:
+                    replacement = f'{left_var} == Union[{right_a}, {right_b}]'
+                    new_line = line.replace(full_match, replacement)
+                    new_lines.append(new_line)
+                    needs_fix = True
+                    continue
+
         new_lines.append(line)
 
     if needs_fix:
@@ -5313,15 +5382,31 @@ def fix_pep604_non_annotation(content):
             new_lines.append(line)
             continue
 
-        m = re.match(r'^(\s*)(\w+)\s*=\s*(.+)\s*\|\s*(.+)$', line)
+        m = re.match(r'^(\s*)(\w+)\s*=\s*(.+)$', stripped)
         if m:
-            indent = m.group(1)
+            indent = line[:len(line) - len(line.lstrip())]
             name = m.group(2)
-            rest = line[line.index('=') + 1:].strip()
-            if re.search(r'^[A-Z]\w*(\s*\|\s*[A-Z]\w*)+', rest):
-                if not re.search(r're\.\w+', rest):
-                    converted = _convert_pipe_to_union(rest)
-                    new_lines.append(f'{indent}{name} = {converted}')
+            rest = m.group(3).strip()
+            if _is_type_alias_name_for_fix(name) and _is_type_expr_str(rest):
+                if _has_pipe_in_type_expr(rest):
+                    if not re.search(r're\.\w+', rest):
+                        if not re.search(r'\b0x[0-9a-fA-F]+\s*\|', rest):
+                            converted = _convert_pipe_to_union(rest)
+                            new_lines.append(f'{indent}{name} = {converted}')
+                            needs_union = True
+                            continue
+
+        runtime_m = re.search(r'(\w+(?:\.\w+)*)\s*==\s*(\w+(?:\.\w+)*)\s*\|\s*(\w+(?:\.\w+)*)', stripped)
+        if runtime_m:
+            full_match = runtime_m.group(0)
+            left_var = runtime_m.group(1)
+            right_type_a = runtime_m.group(2)
+            right_type_b = runtime_m.group(3)
+            if right_type_a[0].isupper() or right_type_a in ('None', 'int', 'str', 'bool', 'float', 'bytes', 'list', 'dict', 'tuple', 'set'):
+                if right_type_b[0].isupper() or right_type_b in ('None', 'int', 'str', 'bool', 'float', 'bytes', 'list', 'dict', 'tuple', 'set'):
+                    replacement = f'{left_var} == Union[{right_type_a}, {right_type_b}]'
+                    new_line = line.replace(full_match, replacement)
+                    new_lines.append(new_line)
                     needs_union = True
                     continue
 
@@ -5337,7 +5422,7 @@ def fix_pep604_non_annotation(content):
 
 
 def fix_noqa_broken_imports(content):
-    pattern = r'^(\s*)from\s+([\w.]+)\s+import\s+(\w+\s+as\s+\w+)\s+#\s*noqa:\s*[\w,\s]+,\s*(\w+\s+as\s+\w+)\s+#\s*noqa:\s*[\w,\s]+,\s*(\w+\s+as\s+\w+)\s+#\s*noqa:\s*[\w,\s]+'
+    pattern = r'^(\s*)from\s+([\w.]+)\s+import\s+(\w+\s+as\s+\w+)\s+#\s*noqa:\s*\w+(?:,\s*\w+)*\s*,\s*(\w+\s+as\s+\w+)\s+#\s*noqa:\s*\w+(?:,\s*\w+)*\s*,\s*(\w+\s+as\s+\w+)\s+#\s*noqa:\s*\w+(?:,\s*\w+)*'
     m = re.search(pattern, content, re.MULTILINE)
     if not m:
         return content
@@ -5347,9 +5432,14 @@ def fix_noqa_broken_imports(content):
     item2 = m.group(4).strip()
     item3 = m.group(5).strip()
     old_line = m.group(0)
-    new_lines = (f'{indent}from {module} import {item1}  # noqa: F401\n' + f'{indent}from {module} import {item2}  # noqa: F401\n' + f'{indent}from {module} import {item3}  # noqa: F401')
+    new_lines = (
+        f"{indent}from {module} import {item1}  # noqa: F401\n"
+        f"{indent}from {module} import {item2}  # noqa: F401\n"
+        f"{indent}from {module} import {item3}  # noqa: F401"
+    )
     content = content.replace(old_line, new_lines)
-    pattern2 = r'^(\s*)from\s+([\w.]+)\s+import\s+(\w+\s+as\s+\w+)\s+#\s*noqa:\s*[\w,\s]+,\s*(\w+\s+as\s+\w+)\s+#\s*noqa:\s*[\w,\s]+'
+
+    pattern2 = r'^(\s*)from\s+([\w.]+)\s+import\s+(\w+\s+as\s+\w+)\s+#\s*noqa:\s*\w+(?:,\s*\w+)*\s*,\s*(\w+\s+as\s+\w+)\s+#\s*noqa:\s*\w+(?:,\s*\w+)*'
     while True:
         m2 = re.search(pattern2, content, re.MULTILINE)
         if not m2:
@@ -5359,8 +5449,12 @@ def fix_noqa_broken_imports(content):
         i1 = m2.group(3).strip()
         i2 = m2.group(4).strip()
         old2 = m2.group(0)
-        new2 = (f'{indent2}from {module2} import {i1}  # noqa: F401\n' + f'{indent2}from {module2} import {i2}  # noqa: F401')
+        new2 = (
+            f"{indent2}from {module2} import {i1}  # noqa: F401\n"
+            f"{indent2}from {module2} import {i2}  # noqa: F401"
+        )
         content = content.replace(old2, new2)
+
     return content
 
 
@@ -5461,7 +5555,6 @@ def process_file(filepath):
     content = fix_removeprefix_removesuffix(content)
     content = fix_functools_cache(content)
     content = fix_importlib_metadata_import(content)
-    content = fix_importlib_resources(content)
     content = fix_typing_imports(content)
     content = fix_annotated_import(content)
     content = fix_isinstance_union(content)
@@ -5520,7 +5613,6 @@ def process_file(filepath):
     content = fix_runtime_type_union(content)
     content = fix_collections_abc_iterator_subscript(content)
     content = fix_pep604_non_annotation(content)
-    content = fix_noqa_broken_imports(content)
     content = fix_duplicate_imports(content)
     content = fix_future_import_position(content)
 

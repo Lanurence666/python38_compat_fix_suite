@@ -1519,6 +1519,8 @@ def fix_importlib_metadata_import(content):
     if re.search(r"^\s*from importlib_metadata import", content, re.MULTILINE):
         return content
 
+    original = content
+
     content = re.sub(
         r"^(\s*)import importlib\.metadata as (\w+)\n",
         lambda m: f"{m.group(1)}try:\n{m.group(1)}    import importlib.metadata as {m.group(2)}\n{m.group(1)}except ImportError:\n{m.group(1)}    import importlib_metadata as {m.group(2)}\n",
@@ -1528,7 +1530,7 @@ def fix_importlib_metadata_import(content):
 
     content = re.sub(
         r"^(\s*)import importlib\.metadata\n",
-        lambda m: f"{m.group(1)}try:\n{m.group(1)}    import importlib.metadata\n{m.group(1)}except ImportError:\n{m.group(1)}    import importlib_metadata\n{m.group(1)}    importlib.metadata = importlib_metadata\n",
+        lambda m: f"{m.group(1)}try:\n{m.group(1)}    import importlib.metadata as importlib_metadata\n{m.group(1)}except ImportError:\n{m.group(1)}    import importlib_metadata\n",
         content,
         flags=re.MULTILINE,
     )
@@ -1579,7 +1581,34 @@ def fix_importlib_metadata_import(content):
 
     flush_collected()
 
-    return "\n".join(new_lines)
+    content = "\n".join(new_lines)
+
+    # Replace direct references importlib.metadata.xxx → importlib_metadata.xxx
+    # outside of try/except blocks (inside try we keep the original)
+    if content != original:
+        lines = content.split('\n')
+        new_lines = []
+        in_importlib_try = False
+        for line in lines:
+            stripped = line.strip()
+            # Detect start of our try/except block for importlib.metadata
+            if stripped == 'try:' and any(
+                'importlib.metadata' in lines[k] or 'importlib import metadata' in lines[k]
+                for k in range(len(lines))
+                if abs(k - lines.index(line)) <= 2 and k > lines.index(line)
+            ):
+                in_importlib_try = True
+            elif stripped.startswith('except ImportError') and in_importlib_try:
+                pass  # stay in try block
+            elif in_importlib_try and stripped and not stripped.startswith(('import ', 'from ', 'except', 'try:', '#', 'importlib.metadata', 'importlib_metadata')):
+                in_importlib_try = False
+
+            if not in_importlib_try:
+                line = re.sub(r'\bimportlib\.metadata\.', 'importlib_metadata.', line)
+            new_lines.append(line)
+        content = '\n'.join(new_lines)
+
+    return content
 
 
 def fix_typing_imports(content):
@@ -2775,22 +2804,37 @@ def fix_zoneinfo(content):
     if re.search(r"try:\s*\n\s*import zoneinfo", content):
         return content
 
-    content = content.replace(
-        "import zoneinfo\n",
-        "try:\n    import zoneinfo\nexcept ImportError:\n    from backports import zoneinfo\n"
-    )
-
+    # Handle both top-level and function-level 'import zoneinfo'
+    # Replace 'import zoneinfo' with try/except block (preserving indentation)
     lines = content.split("\n")
     new_lines = []
     for line in lines:
-        m = re.match(r"^from zoneinfo import (.+)$", line)
+        m = re.match(r'^(\s*)import zoneinfo\s*$', line)
         if m:
-            items = [item.strip() for item in m.group(1).split(",")]
+            indent = m.group(1)
+            new_lines.append(f"{indent}try:")
+            new_lines.append(f"{indent}    import zoneinfo")
+            new_lines.append(f"{indent}except ImportError:")
+            new_lines.append(f"{indent}    from backports import zoneinfo")
+        else:
+            new_lines.append(line)
+
+    content = "\n".join(new_lines)
+
+    # Handle 'from zoneinfo import ...'
+    lines = content.split("\n")
+    new_lines = []
+    for line in lines:
+        m = re.match(r'^(\s*)from zoneinfo import (.+)$', line)
+        if m:
+            indent = m.group(1)
+            items = [item.strip() for item in m.group(2).split(",")]
+            new_lines.append(f"{indent}try:")
             for item in items:
-                new_lines.append("try:")
-                new_lines.append(f"    from zoneinfo import {item}")
-                new_lines.append("except ImportError:")
-                new_lines.append(f"    from backports.zoneinfo import {item}")
+                new_lines.append(f"{indent}    from zoneinfo import {item}")
+            new_lines.append(f"{indent}except ImportError:")
+            for item in items:
+                new_lines.append(f"{indent}    from backports.zoneinfo import {item}")
         else:
             new_lines.append(line)
 
@@ -4334,6 +4378,30 @@ def fix_pyproject_toml(root):
         content,
     )
 
+    # Fix license = "XXX" → license = {text = "XXX"} for setuptools < 69 compat
+    # Older setuptools require license to be {text = ...} or {file = ...}
+    content = re.sub(
+        r'''^license\s*=\s*["']([^"']+)["']\s*$''',
+        r'license = {text = "\1"}',
+        content,
+        flags=re.MULTILINE,
+    )
+
+    # Remove license-files = [...] which is not supported by older setuptools
+    content = re.sub(
+        r'''^license-files\s*=\s*\[.*?\]\s*$\n?''',
+        '',
+        content,
+        flags=re.MULTILINE,
+    )
+
+    # Lower setuptools requirement for Python 3.8 compat (setuptools>=69 may not work)
+    content = re.sub(
+        r'''requires\s*=\s*\[["']setuptools>=69["']''',
+        'requires = ["setuptools>=64"',
+        content,
+    )
+
     if content != original:
         with open(pyproject_path, "w", encoding="utf-8", errors="replace") as f:
             f.write(content)
@@ -5862,6 +5930,226 @@ def _normalize_multiline_imports(content):
     return '\n'.join(new_lines)
 
 
+def fix_backslash_continuation_imports(content):
+    """Fix 'from X import \\ (backslash continuation) lines that can cause
+    syntax errors when other fixers modify imports.  Converts them into
+    parenthesised multi-line imports so that _normalize_multiline_imports
+    can later collapse them into a single line."""
+
+    if not re.search(r'^\s*from\s+[\w.]+\s+import\s+\\', content, re.MULTILINE):
+        return content
+
+    lines = content.split('\n')
+    new_lines = []
+    i = 0
+    while i < len(lines):
+        m = re.match(r'^(\s*)from\s+([\w.]+)\s+import\s+\\\s*$', lines[i])
+        if not m:
+            new_lines.append(lines[i])
+            i += 1
+            continue
+
+        indent = m.group(1)
+        module = m.group(2)
+        items = []
+
+        # collect continuation lines
+        j = i + 1
+        while j < len(lines):
+            stripped = lines[j].strip()
+            # another backslash continuation?
+            m2 = re.match(r'^(\s*)(.+?)\s*\\\s*$', lines[j])
+            if m2:
+                item = m2.group(2).strip().rstrip(',')
+                if item:
+                    items.append(item)
+                j += 1
+                continue
+            # last line (no backslash)
+            if stripped and not stripped.startswith('#'):
+                item = stripped.rstrip(',')
+                if item:
+                    items.append(item)
+                j += 1
+                break
+            # blank line or comment ends the import
+            break
+
+        if items:
+            # write as parenthesised import
+            new_lines.append(f'{indent}from {module} import (')
+            for k, item in enumerate(items):
+                comma = ',' if k < len(items) - 1 else ''
+                new_lines.append(f'{indent}    {item}{comma}')
+            new_lines.append(f'{indent})')
+        else:
+            new_lines.append(lines[i])
+
+        i = j
+
+    return '\n'.join(new_lines)
+
+
+def fix_import_star_conflict(content):
+    """Remove 'from X import *' when followed by 'from X import (specific)'
+    in the same file — the specific import already covers what's needed and
+    having both can cause syntax errors after other fixers merge them."""
+
+    # find all modules that have both import * and import (specific)
+    star_modules = set()
+    specific_modules = set()
+    for m in re.finditer(r'^\s*from\s+([\w.]+)\s+import\s+\*\s*$', content, re.MULTILINE):
+        star_modules.add(m.group(1))
+    for m in re.finditer(r'^\s*from\s+([\w.]+)\s+import\s*\(', content, re.MULTILINE):
+        specific_modules.add(m.group(1))
+    for m in re.finditer(r'^\s*from\s+([\w.]+)\s+import\s+\w+', content, re.MULTILINE):
+        specific_modules.add(m.group(1))
+
+    conflict_modules = star_modules & specific_modules
+    if not conflict_modules:
+        return content
+
+    lines = content.split('\n')
+    new_lines = []
+    for line in lines:
+        skip = False
+        for mod in conflict_modules:
+            if re.match(rf'^\s*from\s+{re.escape(mod)}\s+import\s+\*\s*$', line):
+                skip = True
+                break
+        if not skip:
+            new_lines.append(line)
+
+    return '\n'.join(new_lines)
+
+
+def fix_invalid_escape_sequences(content):
+    r"""Fix invalid escape sequences like '\?' that produce SyntaxWarning in
+    Python 3.12+ and DeprecationWarning in 3.6+.  Converts them to raw strings
+    or properly escaped sequences."""
+
+    if not re.search(r"\\[^nrtbfv01234567'\"\\aNLPxuU]", content):
+        return content
+
+    lines = content.split('\n')
+    new_lines = []
+    for line in lines:
+        # skip comments and strings that are already raw
+        stripped = line.lstrip()
+        if stripped.startswith('#'):
+            new_lines.append(line)
+            continue
+
+        # only process lines that have string literals with invalid escapes
+        # simple approach: find string literals and fix them
+        result = []
+        i = 0
+        in_string = False
+        string_char = None
+        is_raw = False
+        is_triple = False
+        while i < len(line):
+            ch = line[i]
+
+            if not in_string:
+                # check for raw string prefix
+                if i + 1 < len(line) and ch in ('r', 'R') and line[i + 1] in ('"', "'"):
+                    is_raw = True
+                    result.append(ch)
+                    i += 1
+                    continue
+                if i + 2 < len(line) and ch in ('r', 'R') and line[i + 1] in ('b', 'B', 'f', 'F', 'u', 'U') and line[i + 2] in ('"', "'"):
+                    is_raw = True
+                    result.append(ch)
+                    i += 1
+                    continue
+                if ch in ('"', "'"):
+                    in_string = True
+                    string_char = ch
+                    is_triple = False
+                    # check for triple quotes
+                    if i + 2 < len(line) and line[i:i + 3] == ch * 3:
+                        is_triple = True
+                        result.append(line[i:i + 3])
+                        i += 3
+                        continue
+                    result.append(ch)
+                    i += 1
+                    continue
+                result.append(ch)
+                i += 1
+                continue
+
+            # inside string
+            if is_raw:
+                # in raw strings, just pass through
+                if is_triple:
+                    if i + 2 < len(line) and line[i:i + 3] == string_char * 3:
+                        in_string = False
+                        result.append(line[i:i + 3])
+                        i += 3
+                        continue
+                else:
+                    if ch == string_char:
+                        in_string = False
+                result.append(ch)
+                i += 1
+                continue
+
+            # non-raw string
+            if ch == '\\' and i + 1 < len(line):
+                next_ch = line[i + 1]
+                # valid escape sequences
+                if next_ch in 'nrtbfv01234567\'"\\aNLP':
+                    result.append(ch)
+                    result.append(next_ch)
+                    i += 2
+                    continue
+                elif next_ch == 'x' or next_ch in 'uU':
+                    result.append(ch)
+                    result.append(next_ch)
+                    i += 2
+                    continue
+                else:
+                    # invalid escape - double the backslash
+                    result.append('\\\\')
+                    result.append(next_ch)
+                    i += 2
+                    continue
+
+            if is_triple:
+                if i + 2 < len(line) and line[i:i + 3] == string_char * 3:
+                    in_string = False
+                    result.append(line[i:i + 3])
+                    i += 3
+                    continue
+            else:
+                if ch == string_char:
+                    in_string = False
+
+            result.append(ch)
+            i += 1
+
+        new_lines.append(''.join(result))
+
+    return '\n'.join(new_lines)
+
+
+def fix_missing_operator_before_paren(content):
+    r"""Fix cases like 'a**2(b)' where a multiplication operator is missing
+    before a parenthesis.  Pattern: identifier/number/closing-bracket followed
+    by '(' without an operator in between.  Only applies to clearly numeric
+    contexts like 'x**2(tmp' to avoid false positives."""
+
+    # very targeted: number**N ( ...  — missing * between ) and (
+    content = re.sub(
+        r'(\*\*\d+)\s*\(',
+        r'\1*(',
+        content,
+    )
+    return content
+
+
 def process_file(filepath):
     import py_compile
     import tempfile
@@ -5872,7 +6160,11 @@ def process_file(filepath):
 
     original = content
 
+    content = fix_backslash_continuation_imports(content)
     content = _normalize_multiline_imports(content)
+    content = fix_import_star_conflict(content)
+    content = fix_invalid_escape_sequences(content)
+    content = fix_missing_operator_before_paren(content)
 
     content = fix_lambda_decorator(content)
     content = fix_pep695_generic_class(content)
@@ -5957,6 +6249,14 @@ def process_file(filepath):
             os.unlink(tmp.name)
             from i18n import t
             print(t("warning_syntax_revert", filepath=filepath, error=e))
+            # Write to log file
+            log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    "python38-pythonfix-log.txt")
+            with open(log_path, "a", encoding="utf-8") as logf:
+                logf.write(f"\n{'='*60}\n")
+                logf.write(f"REVERTED: {filepath}\n")
+                logf.write(f"Reason: {e}\n")
+                logf.write(f"{'='*60}\n")
             return False
 
         with open(filepath, "w", encoding="utf-8", errors="replace") as f:

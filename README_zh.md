@@ -30,6 +30,7 @@
 | **Transformers** | 5.8.0.dev0（最新 main） | 在 Python 3.8 上编译并测试通过 | — |
 | **HuggingFace Hub** | 1.17.0.dev0（最新 main） | 在 Python 3.8 上编译并测试通过 | — |
 | **PEFT** | 0.19.2.dev0（最新 main） | 在 Python 3.8 上编译并测试通过 | [peft_backport_py38](https://github.com/Lanurence666/peft_backport_py38) |
+| **ModelScope** | 2.0.0+main（最新 main） | 在 Python 3.8 上编译并测试通过 | — |
 
 所有项目均以最大优化标志编译，并发布为可安装的 wheel 包。PyTorch 以可编辑（开发）模式安装进行测试。
 
@@ -77,6 +78,29 @@
 - dataclass 字段中的 `Literal["zero"] | None` — `from __future__ import annotations` 不阻止 dataclass 字段类型的运行时求值
 - `itertools.pairwise()` 导入（Python 3.10+）— 现已由脚本自动修复
 - 自定义 PyTorch 构建的 `torch.distributed.tensor` 可用性检查
+
+### ModelScope 测试结果（Python 3.8）
+
+最新的 **ModelScope 2.0.0+main** 已在 Python 3.8.10 + PyTorch 2.13 环境下通过验证：
+
+**✅ 已验证功能：**
+- 核心导入：`import modelscope`（v2.0.0+main）
+- `importlib.metadata` 兼容性：`import_utils`、`plugins`
+- `zoneinfo` 兼容性：`hub/utils/utils`（时间戳转换）
+- 音频模型：`zipformer.Zipformer2EncoderLayer`
+- 流式输出：`streaming_output.StreamingOutputMixin`
+- 数据加载：`data_loader.OssDownloader`
+- 完整编译：2859 个 `.py` 文件编译通过，0 错误
+
+**🔧 需额外手动修复（超出自动脚本范围）：**
+- `import importlib.metadata` 顶层导入 + `importlib.metadata.xxx` 直接引用 → 需要 `importlib_metadata` 别名替换
+- 函数内 `import zoneinfo` → 需要 `try/except` 加 `backports.zoneinfo`（v2 已自动修复）
+- `from X import \` 反斜杠续行 → 其他修复器修改导入时产生语法错误（v2 已自动修复）
+- `from X import *` + `from X import (具体名)` → 导入合并后语法冲突（v2 已自动修复）
+- `pyproject.toml` `license = "XXX"` 格式 → 旧版 setuptools 不兼容（v2 已自动修复）
+- `pyproject.toml` `license-files = [...]` → 旧版 setuptools 不支持（v2 已自动修复）
+- `x**2(y)` 缺少 `*` 运算符 → `x**2*(y)`（v2 已自动修复）
+- `'\?'` 无效转义序列 → `'\\?'`（v2 已自动修复）
 
 ## fix_py38_python.py — Python 源码修复
 

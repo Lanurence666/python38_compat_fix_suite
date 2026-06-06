@@ -30,6 +30,7 @@ We have successfully used this suite to backport major scientific computing and 
 | **Transformers** | 5.8.0.dev0 (latest main) | Compiled & tested on Python 3.8 | — |
 | **HuggingFace Hub** | 1.17.0.dev0 (latest main) | Compiled & tested on Python 3.8 | — |
 | **PEFT** | 0.19.2.dev0 (latest main) | Compiled & tested on Python 3.8 | [peft_backport_py38](https://github.com/Lanurence666/peft_backport_py38) |
+| **ModelScope** | 2.0.0+main (latest main) | Compiled & tested on Python 3.8 | — |
 
 All projects were compiled with maximum optimization flags and released as installable wheels. PyTorch was installed in editable (development) mode for testing.
 
@@ -77,6 +78,29 @@ The latest **PEFT 0.19.2.dev0** was verified with comprehensive testing on Pytho
 - `Literal["zero"] | None` in dataclass fields — `from __future__ import annotations` does NOT prevent runtime evaluation of dataclass field types
 - `itertools.pairwise()` import (Python 3.10+) — now auto-fixed by the script
 - `torch.distributed.tensor` availability check for custom PyTorch builds
+
+### ModelScope Test Results (Python 3.8)
+
+The latest **ModelScope 2.0.0+main** was verified on Python 3.8.10 + PyTorch 2.13:
+
+**✅ Verified Functionality:**
+- Core import: `import modelscope` (v2.0.0+main)
+- `importlib.metadata` compatibility: `import_utils`, `plugins`
+- `zoneinfo` compatibility: `hub/utils/utils` (timestamp conversion)
+- Audio models: `zipformer.Zipformer2EncoderLayer`
+- Streaming: `streaming_output.StreamingOutputMixin`
+- Data loading: `data_loader.OssDownloader`
+- Full compilation: 2859 `.py` files compiled with 0 errors
+
+**🔧 Additional Manual Fixes Required (beyond automated script):**
+- `import importlib.metadata` top-level import + direct `importlib.metadata.xxx` references → need `importlib_metadata` alias replacement
+- Function-level `import zoneinfo` → need `try/except` with `backports.zoneinfo` (now auto-fixed in v2)
+- `from X import \` (backslash continuation) → causes syntax errors when other fixers modify imports (now auto-fixed in v2)
+- `from X import *` + `from X import (specific)` → syntax conflict after import merging (now auto-fixed in v2)
+- `pyproject.toml` `license = "XXX"` format → incompatible with older setuptools (now auto-fixed in v2)
+- `pyproject.toml` `license-files = [...]` → not supported by older setuptools (now auto-fixed in v2)
+- `x**2(y)` missing `*` operator → `x**2*(y)` (now auto-fixed in v2)
+- `'\?'` invalid escape sequence → `'\\?'` (now auto-fixed in v2)
 
 ## fix_py38_python.py — Python Source Fixes
 
@@ -141,6 +165,14 @@ The latest **PEFT 0.19.2.dev0** was verified with comprehensive testing on Pytho
 | 55 | `itertools.pairwise()` | 3.10+ | `try/except` fallback with `_itertools_pairwise_compat()` implementation |
 | 56 | Dataclass field union (`X \| None` in dataclass fields) | 3.10+ | Convert to `Optional[X]` / `Union[X, Y]` — `from __future__ import annotations` does NOT prevent runtime evaluation of dataclass field types |
 | 57 | TypeAlias PEP 585 without `from __future__ import annotations` | 3.9+ | Direct replacement: `tuple[...]` → `Tuple[...]`, `dict[...]` → `Dict[...]` in TypeAlias values — `from __future__ import annotations` does NOT affect TypeAlias value expressions |
+| 58 | Backslash continuation imports (`from X import \`) | — | Convert to parenthesised multi-line imports to prevent syntax errors when other fixers modify imports |
+| 59 | `from X import *` + `from X import (specific)` conflict | — | Remove `import *` when specific imports from the same module exist — prevents syntax errors after import merging |
+| 60 | Invalid escape sequences (`'\?'`, `'\d'` etc.) | 3.12+ warning | Double the backslash in invalid escape sequences inside string literals |
+| 61 | Missing operator before paren (`x**2(y)`) | — | Insert missing `*` operator between power expressions and parentheses |
+| 62 | `importlib.metadata.xxx` direct references | 3.9+ | Replace `importlib.metadata.version()` etc. with `importlib_metadata.version()` after adding compat import |
+| 63 | Function-level `import zoneinfo` | 3.9+ | `try/except` fallback to `backports.zoneinfo` with proper indentation |
+| 64 | `pyproject.toml` license format | — | Convert `license = "XXX"` → `license = {text = "XXX"}` for older setuptools compat; remove `license-files`; lower `setuptools>=69` → `setuptools>=64` |
+| 65 | Revert log file | — | When a file is reverted due to syntax errors, write details to `python38-pythonfix-log.txt` for manual review |
 
 ### Python 3.10–3.15 Functions (Detected but NOT Auto-Fixed)
 

@@ -1013,7 +1013,9 @@ def fix_typing_311_plus(content):
 
 
 def fix_pep585_604(content):
-    if "from __future__ import annotations" in content:
+    has_future = "from __future__ import annotations" in content
+
+    if has_future:
         content = _fix_type_alias_pep585_604(content)
         return content
 
@@ -1028,12 +1030,13 @@ def fix_pep585_604(content):
 
         for t in pep585_types:
             if re.search(rf"\b{t}\[", line):
-                if ":" in line or "->" in line or "def " in line or ("=" in line and "==" not in line):
-                    needs_future = True
-                    break
                 alias_m = re.match(r'^(\s*)(\w+)\s*(:\s*TypeAlias\s*)?=\s*(.+)$', line)
                 if alias_m:
                     has_type_alias_pep = True
+                    continue
+                if ":" in line or "->" in line or "def " in line or ("=" in line and "==" not in line):
+                    needs_future = True
+                    break
         if needs_future:
             break
 
@@ -1050,14 +1053,85 @@ def fix_pep585_604(content):
                 if alias_m:
                     has_type_alias_pep = True
 
+    # For TypeAlias with PEP 585 types, we must replace them directly
+    # because 'from __future__ import annotations' does NOT affect
+    # the right-hand side of TypeAlias assignments (they are values, not annotations)
+    if has_type_alias_pep:
+        content = _fix_type_alias_pep585_604_no_future(content)
+
     if needs_future:
         lines = content.split("\n")
         insert_pos = _find_future_import_position(lines)
         lines.insert(insert_pos, "from __future__ import annotations")
         content = "\n".join(lines)
 
-    if has_type_alias_pep:
-        content = _fix_type_alias_pep585_604(content)
+    return content
+
+
+def _fix_type_alias_pep585_604_no_future(content):
+    """Fix PEP 585 types in TypeAlias when 'from __future__ import annotations' is NOT present.
+
+    Unlike _fix_type_alias_pep585_604, this handles the case where we cannot rely on
+    deferred annotation evaluation. We must replace builtin generics in TypeAlias
+    values directly: tuple[...] -> Tuple[...], dict[...] -> Dict[...], etc.
+    """
+    pep585_map = {
+        "list": "List", "dict": "Dict", "tuple": "Tuple",
+        "set": "Set", "frozenset": "FrozenSet", "type": "Type",
+    }
+    needs_typing_imports = set()
+    lines = content.split('\n')
+    new_lines = []
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith('#') or stripped.startswith('"""') or stripped.startswith("'''"):
+            new_lines.append(line)
+            continue
+
+        m = re.match(r'^(\s*)(\w+)\s*(:\s*TypeAlias\s*)?=\s*(.+)$', stripped)
+        if not m:
+            new_lines.append(line)
+            continue
+
+        name = m.group(2)
+        value = m.group(4).rstrip()
+
+        if not _is_type_alias_name_for_fix(name):
+            new_lines.append(line)
+            continue
+
+        if not _is_type_expr_str(value):
+            new_lines.append(line)
+            continue
+
+        new_value = value
+        changed = False
+
+        for lower, upper in pep585_map.items():
+            if re.search(rf'\b{lower}\[', new_value):
+                new_value = re.sub(rf'\b{lower}\[', f'{upper}[', new_value)
+                needs_typing_imports.add(upper)
+                changed = True
+
+        if '|' in new_value and _has_pipe_in_type_expr(new_value):
+            new_value = _convert_pipe_to_union(new_value)
+            needs_typing_imports.add('Union')
+            changed = True
+
+        if changed:
+            indent = line[:len(line) - len(line.lstrip())]
+            type_alias_part = m.group(3) or ''
+            new_lines.append(f'{indent}{name}{type_alias_part}= {new_value}')
+        else:
+            new_lines.append(line)
+
+    if needs_typing_imports:
+        content = '\n'.join(new_lines)
+        for imp in sorted(needs_typing_imports):
+            content = _ensure_typing_import(content, imp)
+    else:
+        content = '\n'.join(new_lines)
 
     return content
 
@@ -3215,6 +3289,80 @@ def fix_itertools_batched(content):
     return '\n'.join(new_lines)
 
 
+def fix_itertools_pairwise(content):
+    if "itertools.pairwise" not in content and "from itertools import pairwise" not in content and "import pairwise" not in content:
+        return content
+    if "except" in content and "pairwise" in content:
+        has_try_except = False
+        lines_list = content.split('\n')
+        for idx, line in enumerate(lines_list):
+            stripped = line.strip()
+            if stripped.startswith('try:') and 'pairwise' in content:
+                # Check if pairwise appears in a try block
+                for j in range(idx, min(len(lines_list), idx + 5)):
+                    if 'pairwise' in lines_list[j]:
+                        has_try_except = True
+                        break
+            if has_try_except:
+                break
+        if has_try_except:
+            return content
+
+    needs_compat = False
+    lines = content.split('\n')
+    new_lines = []
+    removed_import = False
+
+    for line in lines:
+        # Handle 'from itertools import pairwise' or 'from itertools import X, pairwise, Y'
+        if re.match(r'^\s*from\s+itertools\s+import\s+.*\bpairwise\b', line) and '_itertools_pairwise_compat' not in line:
+            m = re.match(r'^(\s*)from\s+itertools\s+import\s+(.+)$', line)
+            if m:
+                indent = m.group(1)
+                imports_str = m.group(2)
+                imports = [x.strip() for x in imports_str.split(',')]
+                if 'pairwise' in imports:
+                    imports.remove('pairwise')
+                    needs_compat = True
+                    removed_import = True
+                    if imports:
+                        new_lines.append(f'{indent}from itertools import {", ".join(imports)}')
+                    continue
+            needs_compat = True
+
+        # Handle 'itertools.pairwise(...)'
+        if 'itertools.pairwise(' in line and '_itertools_pairwise_compat' not in line:
+            line = line.replace('itertools.pairwise(', '_itertools_pairwise_compat(')
+            needs_compat = True
+
+        # Handle bare 'pairwise(...)' when we removed the import
+        if removed_import and re.search(r'\bpairwise\s*\(', line) and '_itertools_pairwise_compat' not in line:
+            line = re.sub(r'\bpairwise\s*\(', '_itertools_pairwise_compat(', line)
+            needs_compat = True
+
+        new_lines.append(line)
+
+    if needs_compat and '_itertools_pairwise_compat' not in content:
+        compat_code = (
+            "try:\n"
+            "    from itertools import pairwise as _itertools_pairwise_compat\n"
+            "except ImportError:\n"
+            "    def _itertools_pairwise_compat(iterable):\n"
+            "        it = iter(iterable)\n"
+            "        try:\n"
+            "            prev = next(it)\n"
+            "        except StopIteration:\n"
+            "            return\n"
+            "        for item in it:\n"
+            "            yield prev, item\n"
+            "            prev = item\n"
+        )
+        insert_pos = _find_compat_insert_position(new_lines)
+        new_lines.insert(insert_pos, compat_code.rstrip())
+
+    return '\n'.join(new_lines)
+
+
 def fix_pathlib_walk(content):
     if "Path.walk" not in content:
         return content
@@ -5048,6 +5196,186 @@ def _ensure_typing_import(content, name):
     return content
 
 
+def fix_dataclass_field_union(content):
+    """Fix X | None and X | Y in dataclass field type annotations.
+
+    Unlike regular annotations, dataclass field types are evaluated at runtime
+    even when 'from __future__ import annotations' is present. This is because
+    dataclasses access __annotations__ directly. So we must convert:
+        field: X | None = ...  ->  field: Optional[X] = ...
+        field: X | Y = ...     ->  field: Union[X, Y] = ...
+    """
+    if '|' not in content:
+        return content
+    if 'dataclass' not in content and '@dataclass' not in content:
+        return content
+
+    in_dataclass = False
+    dataclass_indent = ""
+    needs_import = False
+    lines = content.split('\n')
+    new_lines = []
+
+    for line in lines:
+        stripped = line.strip()
+
+        # Detect dataclass definition
+        if re.match(r'^@\s*(?:dataclasses\.)?dataclass', stripped):
+            in_dataclass = True
+            new_lines.append(line)
+            continue
+
+        if in_dataclass:
+            # Detect class header after @dataclass
+            if re.match(r'^class\s+\w+', stripped):
+                dataclass_indent = ""
+                new_lines.append(line)
+                continue
+
+            # Detect end of dataclass (another class/function at same or lower indent)
+            if stripped and not stripped.startswith('#') and not stripped.startswith('"""') and not stripped.startswith("'''"):
+                current_indent = len(line) - len(line.lstrip())
+                if current_indent == 0 and not stripped.startswith('@'):
+                    if re.match(r'^(class |def |@|from |import )', stripped):
+                        in_dataclass = False
+                        dataclass_indent = ""
+
+            # Check for field with | in type annotation inside dataclass
+            if in_dataclass and '|' in stripped and ':' in stripped:
+                # Match field: Type | None = default  or  field: Type | OtherType = default
+                m = re.match(r'^(\s+)(\w+)\s*:\s*(.+?)(\s*=\s*.+)?$', line)
+                if m:
+                    indent = m.group(1)
+                    field_name = m.group(2)
+                    type_expr = m.group(3).strip()
+                    default = m.group(4) or ''
+
+                    # Skip if it's a string, comment, or not a type expression
+                    if field_name.startswith('"') or field_name.startswith("'"):
+                        new_lines.append(line)
+                        continue
+
+                    # Skip if inside a method (has 'def' before this line in the class)
+                    # or if it looks like a function parameter
+                    if re.search(r'\bdef\s+\w+', stripped):
+                        new_lines.append(line)
+                        continue
+
+                    # Check if type_expr contains | that's a type union (not bitwise or)
+                    if _has_pipe_in_type_expr(type_expr):
+                        # Skip if it's a re pattern or numeric operation
+                        if re.search(r're\.\w+\s*\|', type_expr):
+                            new_lines.append(line)
+                            continue
+                        if re.search(r'\b0x[0-9a-fA-F]+\s*\|', type_expr):
+                            new_lines.append(line)
+                            continue
+
+                        # Convert X | None -> Optional[X]
+                        type_expr = _convert_dataclass_field_pipe(type_expr)
+                        needs_import = True
+                        new_lines.append(f'{indent}{field_name}: {type_expr}{default}')
+                        continue
+
+        new_lines.append(line)
+
+    if needs_import:
+        content = '\n'.join(new_lines)
+        # Check if Optional or Union was used and add imports
+        if 'Optional[' in content:
+            content = _ensure_typing_import(content, 'Optional')
+        if 'Union[' in content and 'Optional[' not in content:
+            content = _ensure_typing_import(content, 'Union')
+    else:
+        content = '\n'.join(new_lines)
+
+    return content
+
+
+def _convert_dataclass_field_pipe(type_expr):
+    """Convert X | None to Optional[X] and X | Y to Union[X, Y] in dataclass fields."""
+    # Handle X | None or None | X -> Optional[X]
+    # Handle X | Y | None -> Optional[Union[X, Y]]
+    parts = _split_type_union(type_expr)
+    if not parts:
+        return type_expr
+
+    has_none = None
+    non_none_parts = []
+    for p in parts:
+        p = p.strip()
+        if p == 'None':
+            has_none = p
+        else:
+            non_none_parts.append(p)
+
+    if not non_none_parts:
+        return type_expr
+
+    if has_none:
+        if len(non_none_parts) == 1:
+            return f'Optional[{non_none_parts[0]}]'
+        else:
+            return f'Optional[Union[{", ".join(non_none_parts)}]]'
+    else:
+        if len(non_none_parts) > 1:
+            return f'Union[{", ".join(non_none_parts)}]'
+        return type_expr
+
+
+def _split_type_union(expr):
+    """Split a type expression on top-level | operators, respecting brackets and strings."""
+    parts = []
+    current = []
+    depth = 0
+    in_string = False
+    string_char = None
+    i = 0
+    while i < len(expr):
+        ch = expr[i]
+        if in_string:
+            current.append(ch)
+            if ch == '\\' and i + 1 < len(expr):
+                i += 1
+                current.append(expr[i])
+                i += 1
+                continue
+            if ch == string_char:
+                in_string = False
+            i += 1
+            continue
+        if ch in ('"', "'"):
+            in_string = True
+            string_char = ch
+            current.append(ch)
+            i += 1
+            continue
+        if ch in '([':
+            depth += 1
+            current.append(ch)
+        elif ch in ')]':
+            depth -= 1
+            current.append(ch)
+        elif ch == '|' and depth == 0:
+            if i + 1 < len(expr) and expr[i + 1] == '|':
+                current.append('||')
+                i += 2
+                continue
+            parts.append(''.join(current).strip())
+            current = []
+            i += 1
+            continue
+        else:
+            current.append(ch)
+        i += 1
+
+    last = ''.join(current).strip()
+    if last:
+        parts.append(last)
+
+    return parts
+
+
 def fix_dataclass_kw_only(content):
     if 'kw_only' not in content:
         return content
@@ -5586,6 +5914,7 @@ def process_file(filepath):
     content = fix_operator_call(content)
     content = fix_hashlib_file_digest(content)
     content = fix_itertools_batched(content)
+    content = fix_itertools_pairwise(content)
     content = fix_pathlib_walk(content)
     content = fix_distutils_import(content)
     content = fix_typing_313_plus(content)
@@ -5607,6 +5936,7 @@ def process_file(filepath):
     content = fix_types_py39_aliases(content, filepath)
     content = fix_array_api_compat_typing(content)
     content = fix_type_alias_union(content)
+    content = fix_dataclass_field_union(content)
     content = fix_dataclass_kw_only(content)
     content = fix_inspect_get_annotations(content)
     content = fix_type_alias_type(content)
@@ -5771,6 +6101,7 @@ def main():
         (r"\boperator\.call\(", "operator.call() (3.11+)"),
         (r"\bhashlib\.file_digest\(", "hashlib.file_digest() (3.11+)"),
         (r"\bitertools\.batched\(", "itertools.batched() (3.12+)"),
+        (r"\bitertools\.pairwise\b(?!_compat)", "itertools.pairwise() (3.10+)"),
         (r"\bPath\.walk\(", "pathlib.Path.walk() (3.12+)"),
         (r"^from distutils\b(?!.*(?:try:|except))", "distutils import (3.12 removed)"),
         (r"\bwarnings\.deprecated\b", "warnings.deprecated() (3.13+)"),

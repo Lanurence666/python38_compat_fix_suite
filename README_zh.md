@@ -29,6 +29,7 @@
 | **PyTorch** | 2.13.0a0（最新 main） | 在 Python 3.8 上编译并测试通过 | [pytorch_backport_py38](https://github.com/Lanurence666/pytorch_backport_py38) |
 | **Transformers** | 5.8.0.dev0（最新 main） | 在 Python 3.8 上编译并测试通过 | — |
 | **HuggingFace Hub** | 1.17.0.dev0（最新 main） | 在 Python 3.8 上编译并测试通过 | — |
+| **PEFT** | 0.19.2.dev0（最新 main） | 在 Python 3.8 上编译并测试通过 | [peft_backport_py38](https://github.com/Lanurence666/peft_backport_py38) |
 
 所有项目均以最大优化标志编译，并发布为可安装的 wheel 包。PyTorch 以可编辑（开发）模式安装进行测试。
 
@@ -54,6 +55,28 @@
 - `get_type_hints()` try/except 保护（PEP 585/604 注解）
 - `dataclass(kw_only=True)` 条件处理
 - 模块级 PEP 585 类型别名在基类中的使用（如 `OrderedDict[str, str | None]`）
+
+### PEFT 测试结果（Python 3.8）
+
+最新的 **PEFT 0.19.2.dev0** 已在 Python 3.8.10 + PyTorch 2.13 环境下通过全面测试验证：
+
+**✅ 已验证功能：**
+- 核心导入：`import peft`
+- 所有配置类：`LoraConfig`、`AdaLoraConfig`、`IA3Config`、`LoHaConfig`、`LoKrConfig`、`OFTConfig`、`BOFTConfig`、`VeraConfig`、`VBLoRAConfig`、`FourierFTConfig`、`HRAConfig`、`C3AConfig`、`RandLoraConfig`、`RoadConfig`、`ShiraConfig`、`MissConfig`、`BdLoraConfig`、`CartridgeConfig`、`WaveFTConfig` 等
+- LoRA：应用、前向传播、多目标模块
+- 保存与加载 adapter
+- 多 adapter 管理：添加/切换
+- IA3、AdaLora
+- 合并/取消合并 adapter
+- 禁用 adapter 上下文管理器
+- 配置序列化
+- 可训练参数计数
+
+**🔧 需额外手动修复（超出自动脚本范围）：**
+- TypeAlias 赋值中的 `tuple[...]`/`dict[...]`（如 `WaveletCoeff2d: TypeAlias = tuple[...]`）— `from __future__ import annotations` 不影响 TypeAlias 值表达式
+- dataclass 字段中的 `Literal["zero"] | None` — `from __future__ import annotations` 不阻止 dataclass 字段类型的运行时求值
+- `itertools.pairwise()` 导入（Python 3.10+）— 现已由脚本自动修复
+- 自定义 PyTorch 构建的 `torch.distributed.tensor` 可用性检查
 
 ## fix_py38_python.py — Python 源码修复
 
@@ -115,6 +138,9 @@
 | 52 | 类型别名 PEP 585 + 604 组合（`X = dict[str, int \| str]`） | 3.9+ | 递归转换：`dict` → `Dict`，`\|` → `Union`，支持嵌套括号处理 |
 | 53 | 改进的字典合并变量检测（`self.kwargs \| other`） | 3.9+ | 检测带点变量名和 `kwargs` 风格变量进行字典合并转换 |
 | 54 | `ExceptionGroup` / `BaseExceptionGroup` | 3.11+ | `try/except` 回退到 `exceptiongroup` |
+| 55 | `itertools.pairwise()` | 3.10+ | `try/except` 回退并使用 `_itertools_pairwise_compat()` 实现 |
+| 56 | dataclass 字段联合类型（`X \| None`） | 3.10+ | 转换为 `Optional[X]` / `Union[X, Y]` — `from __future__ import annotations` 不阻止 dataclass 字段类型的运行时求值 |
+| 57 | 无 `from __future__ import annotations` 时的 TypeAlias PEP 585 | 3.9+ | 直接替换：`tuple[...]` → `Tuple[...]`、`dict[...]` → `Dict[...]` — `from __future__ import annotations` 不影响 TypeAlias 值表达式 |
 
 ### Python 3.10–3.15 函数（仅检测，不自动修复）
 

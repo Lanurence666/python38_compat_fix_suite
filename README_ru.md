@@ -29,6 +29,7 @@
 | **PyTorch** | 2.13.0a0 (последний main) | Скомпилирован и протестирован на Python 3.8 | [pytorch_backport_py38](https://github.com/Lanurence666/pytorch_backport_py38) |
 | **Transformers** | 5.8.0.dev0 (последний main) | Скомпилирован и протестирован на Python 3.8 | — |
 | **HuggingFace Hub** | 1.17.0.dev0 (последний main) | Скомпилирован и протестирован на Python 3.8 | — |
+| **PEFT** | 0.19.2.dev0 (последний main) | Скомпилирован и протестирован на Python 3.8 | [peft_backport_py38](https://github.com/Lanurence666/peft_backport_py38) |
 
 Все проекты были скомпилированы с максимальными флагами оптимизации и выпущены как устанавливаемые wheel-пакеты. PyTorch был установлен в режиме редактирования (разработки) для тестирования.
 
@@ -54,6 +55,28 @@
 - Защита `get_type_hints()` через try/except (аннотации PEP 585/604)
 - Условная обработка `dataclass(kw_only=True)`
 - Использование PEP 585 псевдонимов типов на уровне модуля в базовых классах (например, `OrderedDict[str, str | None]`)
+
+### Результаты тестирования PEFT (Python 3.8)
+
+Последняя версия **PEFT 0.19.2.dev0** была проверена комплексным тестированием на Python 3.8.10 + PyTorch 2.13:
+
+**✅ Проверенная функциональность:**
+- Основной импорт: `import peft`
+- Все классы конфигурации: `LoraConfig`, `AdaLoraConfig`, `IA3Config`, `LoHaConfig`, `LoKrConfig`, `OFTConfig`, `BOFTConfig`, `VeraConfig`, `VBLoRAConfig`, `FourierFTConfig`, `HRAConfig`, `C3AConfig`, `RandLoraConfig`, `RoadConfig`, `ShiraConfig`, `MissConfig`, `BdLoraConfig`, `CartridgeConfig`, `WaveFTConfig` и др.
+- LoRA: применение, прямой проход, несколько целевых модулей
+- Сохранение и загрузка адаптера
+- Управление несколькими адаптерами: добавление/переключение
+- IA3, AdaLora
+- Слияние/разъединение адаптера
+- Контекстный менеджер отключения адаптера
+- Сериализация конфигурации
+- Подсчёт обучаемых параметров
+
+**🔧 Дополнительные ручные исправления (помимо автоматического скрипта):**
+- `tuple[...]`/`dict[...]` в присваиваниях TypeAlias (например, `WaveletCoeff2d: TypeAlias = tuple[...]`) — `from __future__ import annotations` НЕ влияет на выражения значений TypeAlias
+- `Literal["zero"] | None` в полях dataclass — `from __future__ import annotations` НЕ предотвращает вычисление типов полей dataclass во время выполнения
+- Импорт `itertools.pairwise()` (Python 3.10+) — теперь автоматически исправляется скриптом
+- Проверка доступности `torch.distributed.tensor` для пользовательских сборок PyTorch
 
 ## fix_py38_python.py — Исправления исходного кода Python
 
@@ -115,6 +138,9 @@
 | 52 | Комбинированный псевдоним типа PEP 585 + 604 (`X = dict[str, int | str]`) | 3.9+ | Рекурсивное преобразование: `dict` → `Dict`, `|` → `Union`, с обработкой вложенных скобок |
 | 53 | Улучшенное определение переменных для слияния словарей (`self.kwargs | other`) | 3.9+ | Обнаружение составных имён переменных и переменных стиля `kwargs` |
 | 54 | `ExceptionGroup` / `BaseExceptionGroup` | 3.11+ | `try/except` с откатом на `exceptiongroup` |
+| 55 | `itertools.pairwise()` | 3.10+ | `try/except` с резервной реализацией `_itertools_pairwise_compat()` |
+| 56 | Объединение в полях dataclass (`X \| None`) | 3.10+ | Преобразование в `Optional[X]` / `Union[X, Y]` — `from __future__ import annotations` НЕ предотвращает вычисление типов полей dataclass во время выполнения |
+| 57 | PEP 585 в TypeAlias без `from __future__ import annotations` | 3.9+ | Прямая замена: `tuple[...]` → `Tuple[...]`, `dict[...]` → `Dict[...]` — `from __future__ import annotations` НЕ влияет на выражения значений TypeAlias |
 
 ### Функции Python 3.10–3.15 (обнаруживаются, но НЕ исправляются автоматически)
 

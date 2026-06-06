@@ -29,6 +29,7 @@ We have successfully used this suite to backport major scientific computing and 
 | **PyTorch** | 2.13.0a0 (latest main) | Compiled & tested on Python 3.8 | [pytorch_backport_py38](https://github.com/Lanurence666/pytorch_backport_py38) |
 | **Transformers** | 5.8.0.dev0 (latest main) | Compiled & tested on Python 3.8 | — |
 | **HuggingFace Hub** | 1.17.0.dev0 (latest main) | Compiled & tested on Python 3.8 | — |
+| **PEFT** | 0.19.2.dev0 (latest main) | Compiled & tested on Python 3.8 | [peft_backport_py38](https://github.com/Lanurence666/peft_backport_py38) |
 
 All projects were compiled with maximum optimization flags and released as installable wheels. PyTorch was installed in editable (development) mode for testing.
 
@@ -54,6 +55,28 @@ The latest **Transformers 5.8.0.dev0** and **HuggingFace Hub 1.17.0.dev0** were 
 - `get_type_hints()` try/except protection for PEP 585/604 annotations
 - `dataclass(kw_only=True)` conditional handling
 - Module-level PEP 585 type aliases in base classes (e.g., `OrderedDict[str, str | None]`)
+
+### PEFT Test Results (Python 3.8)
+
+The latest **PEFT 0.19.2.dev0** was verified with comprehensive testing on Python 3.8.10 + PyTorch 2.13:
+
+**✅ Verified Functionality:**
+- Core import: `import peft`
+- All config classes: `LoraConfig`, `AdaLoraConfig`, `IA3Config`, `LoHaConfig`, `LoKrConfig`, `OFTConfig`, `BOFTConfig`, `VeraConfig`, `VBLoRAConfig`, `FourierFTConfig`, `HRAConfig`, `C3AConfig`, `RandLoraConfig`, `RoadConfig`, `ShiraConfig`, `MissConfig`, `BdLoraConfig`, `CartridgeConfig`, `WaveFTConfig`, and more
+- LoRA: application, forward pass, multiple target modules
+- Save & load adapter
+- Multiple adapters: add/set
+- IA3, AdaLora
+- Merge/unmerge adapter
+- Disable adapter context manager
+- Config serialization
+- Trainable parameters count
+
+**🔧 Additional Manual Fixes Required (beyond automated script):**
+- `tuple[...]`/`dict[...]` in `TypeAlias` assignments (e.g., `WaveletCoeff2d: TypeAlias = tuple[...]`) — `from __future__ import annotations` does NOT affect TypeAlias value expressions
+- `Literal["zero"] | None` in dataclass fields — `from __future__ import annotations` does NOT prevent runtime evaluation of dataclass field types
+- `itertools.pairwise()` import (Python 3.10+) — now auto-fixed by the script
+- `torch.distributed.tensor` availability check for custom PyTorch builds
 
 ## fix_py38_python.py — Python Source Fixes
 
@@ -115,6 +138,9 @@ The latest **Transformers 5.8.0.dev0** and **HuggingFace Hub 1.17.0.dev0** were 
 | 52 | Type alias PEP 585 + 604 combined (`X = dict[str, int \| str]`) | 3.9+ | Recursive conversion: `dict` → `Dict`, `\|` → `Union`, with nested bracket handling |
 | 53 | Dict merge with improved variable detection (`self.kwargs \| other`) | 3.9+ | Detect dotted variable names and `kwargs`-style variables for dict merge conversion |
 | 54 | `ExceptionGroup` / `BaseExceptionGroup` | 3.11+ | `try/except` fallback to `exceptiongroup` |
+| 55 | `itertools.pairwise()` | 3.10+ | `try/except` fallback with `_itertools_pairwise_compat()` implementation |
+| 56 | Dataclass field union (`X \| None` in dataclass fields) | 3.10+ | Convert to `Optional[X]` / `Union[X, Y]` — `from __future__ import annotations` does NOT prevent runtime evaluation of dataclass field types |
+| 57 | TypeAlias PEP 585 without `from __future__ import annotations` | 3.9+ | Direct replacement: `tuple[...]` → `Tuple[...]`, `dict[...]` → `Dict[...]` in TypeAlias values — `from __future__ import annotations` does NOT affect TypeAlias value expressions |
 
 ### Python 3.10–3.15 Functions (Detected but NOT Auto-Fixed)
 

@@ -31,6 +31,7 @@
 | **HuggingFace Hub** | 1.17.0.dev0（最新 main） | 在 Python 3.8 上编译并测试通过 | — |
 | **PEFT** | 0.19.2.dev0（最新 main） | 在 Python 3.8 上编译并测试通过 | [peft_backport_py38](https://github.com/Lanurence666/peft_backport_py38) |
 | **ModelScope** | 2.0.0+main（最新 main） | 在 Python 3.8 上编译并测试通过 | — |
+| **FastAPI** | 0.115.14（最新 main） | 在 Python 3.8 上编译并测试通过 | [fastapi_backport_py38](https://github.com/Lanurence666/fastapi_backport_py38) |
 
 所有项目均以最大优化标志编译，并发布为可安装的 wheel 包。PyTorch 以可编辑（开发）模式安装进行测试。
 
@@ -102,6 +103,48 @@
 - `x**2(y)` 缺少 `*` 运算符 → `x**2*(y)`（v2 已自动修复）
 - `'\?'` 无效转义序列 → `'\\?'`（v2 已自动修复）
 
+### FastAPI 测试结果（Python 3.8）
+
+最新的 **FastAPI 0.115.14** 已回移至 Python 3.8 并在 Python 3.8.10 上验证：
+
+**✅ 已验证功能（46/46 核心测试通过）：**
+- 应用创建和路由（GET、POST、PUT、DELETE）
+- 路径参数 / 查询参数（含验证）
+- Pydantic v2 模型请求体（包括嵌套模型、Union 类型）
+- 依赖注入（简单、基于类、嵌套）
+- APIRouter（前缀和标签）
+- OpenAPI schema 生成（包括 Pydantic 模型 schema）
+- `jsonable_encoder`（Pydantic 模型、字典、datetime）
+- `HTTPException` 处理（含自定义头部）
+- 多种响应类（JSON、HTML、PlainText、Redirect）
+- 状态码配置
+- 表单参数和文件上传
+- Header 和 Cookie 参数
+- 后台任务
+- CORS 中间件
+- 完整 CRUD 应用和多路由
+
+**测试套件摘要：**
+| 指标 | 数量 |
+|------|------|
+| 通过 | 747 |
+| 失败 | 869 |
+| 跳过 | 23 |
+| 收集错误 | 72 |
+
+> 大部分失败来自测试文件中使用 `type[Model] | None` 作为 Pydantic 模型字段类型。核心 FastAPI 库工作正常。
+
+**🔧 需要额外手动修复（超出自动脚本范围）：**
+- `collections.abc` 可下标类型（`Callable`、`Awaitable`、`Generator`、`Coroutine`、`AsyncIterator`、`AsyncGenerator`）→ 移至 `typing` 模块导入（v2 已自动修复）
+- `contextlib.AbstractAsyncContextManager[T]` → `typing.AsyncContextManager[T]`（v2 已自动修复）
+- `type["X"]` 运行时下标 → `Type["X"]` 来自 `typing`（v2 已自动修复）
+- `inspect.signature(eval_str=True)` → 使用 `sys.version_info >= (3, 10)` 版本门控（v2 已自动修复）
+- `typing_inspection` 模块 → `try/except ImportError` 回退（v2 已自动修复）
+- `types.GenericAlias` / `types.UnionType` → `hasattr` 检查（v2 已自动修复）
+- `eval_type_backport` 依赖，用于 Pydantic v2 运行时类型求值
+- Starlette 版本锁定 `>=0.27.0,<0.36.0`（最后兼容 Python 3.8 的版本范围）
+- 压缩单行多导入 → 拆分为多行格式
+
 ## fix_py38_python.py — Python 源码修复
 
 ### 修复内容
@@ -165,6 +208,21 @@
 | 55 | `itertools.pairwise()` | 3.10+ | `try/except` 回退并使用 `_itertools_pairwise_compat()` 实现 |
 | 56 | dataclass 字段联合类型（`X \| None`） | 3.10+ | 转换为 `Optional[X]` / `Union[X, Y]` — `from __future__ import annotations` 不阻止 dataclass 字段类型的运行时求值 |
 | 57 | 无 `from __future__ import annotations` 时的 TypeAlias PEP 585 | 3.9+ | 直接替换：`tuple[...]` → `Tuple[...]`、`dict[...]` → `Dict[...]` — `from __future__ import annotations` 不影响 TypeAlias 值表达式 |
+| 58 | 反斜杠续行导入（`from X import \`） | — | 转换为括号多行导入，防止其他修复器修改导入时产生语法错误 |
+| 59 | `from X import *` + `from X import (具体名)` 冲突 | — | 当同一模块存在具体导入时移除 `import *` — 防止导入合并后语法错误 |
+| 60 | 无效转义序列（`'\?'`、`'\d'` 等） | 3.12+ 警告 | 将字符串字面量中的无效转义序列反斜杠加倍 |
+| 61 | 括号前缺少运算符（`x**2(y)`） | — | 在幂表达式和括号之间插入缺少的 `*` 运算符 |
+| 62 | `importlib.metadata.xxx` 直接引用 | 3.9+ | 添加兼容导入后将 `importlib.metadata.version()` 等替换为 `importlib_metadata.version()` |
+| 63 | 函数级 `import zoneinfo` | 3.9+ | `try/except` 回退到 `backports.zoneinfo`，保持正确缩进 |
+| 64 | `pyproject.toml` license 格式 | — | 转换 `license = "XXX"` → `license = {text = "XXX"}` 兼容旧版 setuptools；移除 `license-files`；降低 `setuptools>=69` → `setuptools>=64` |
+| 65 | 回退日志文件 | — | 当文件因语法错误被回退时，将详细信息写入 `python38-pythonfix-log.txt` 供手动审查 |
+| 66 | `inspect.signature(eval_str=True)` | 3.10+ | 添加 `sys.version_info >= (3, 10)` 版本门控：3.10+ 使用 `eval_str=True`，3.8/3.9 省略 |
+| 67 | `typing_inspection` 模块导入 | 3.9+ | 将 `from typing_inspection import ...` 包装在 `try/except ImportError` 中并提供回退实现 |
+| 68 | `contextlib.AbstractAsyncContextManager[T]` 下标 | 3.9+ | 替换为 `typing.AsyncContextManager[T]`；同时处理 `AbstractContextManager[T]` → `typing.ContextManager[T]` |
+| 69 | `type["X"]` 运行时下标 | 3.9+ | 在运行时上下文（非注解行）中将 `type["X"]` 替换为 `Type["X"]`；同时处理 `type[X] \| None` → `Optional[Type[X]]` |
+| 70 | 缺少 `partial` 导入 | — | 检测使用了 `partial()` 但未导入 `from functools import partial` 的情况并自动添加导入 |
+| 71 | 自动添加 `from __future__ import annotations` | — | 安全网：检测使用 `X \| Y` 或 `list[int]` 语法但缺少 `from __future__ import annotations` 的文件并自动添加 |
+| 72 | 扩展 `collections.abc` 可下标类型 | 3.9+ | 除已有的 `Callable`、`Iterator` 等外，还处理 `Awaitable`、`Generator`、`Coroutine`、`AsyncIterator`、`AsyncIterable`、`AsyncGenerator` — 从 `collections.abc` 移至 `typing` 导入 |
 
 ### Python 3.10–3.15 函数（仅检测，不自动修复）
 

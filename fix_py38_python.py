@@ -1022,6 +1022,7 @@ def fix_pep585_604(content):
     pep585_types = {"list", "dict", "set", "frozenset", "tuple", "type"}
     needs_future = False
     has_type_alias_pep = False
+    has_pipe_union = False
 
     for line in content.split("\n"):
         stripped = line.strip()
@@ -1047,11 +1048,13 @@ def fix_pep585_604(content):
                 continue
             if re.search(r"\w+\s*\|\s*\w+", line):
                 if ":" in line or "->" in line or "def " in line:
+                    has_pipe_union = True
                     needs_future = True
                     break
                 alias_m = re.match(r'^(\s*)(\w+)\s*(:\s*TypeAlias\s*)?=\s*(.+)$', line)
                 if alias_m:
                     has_type_alias_pep = True
+                    has_pipe_union = True
 
     # For TypeAlias with PEP 585 types, we must replace them directly
     # because 'from __future__ import annotations' does NOT affect
@@ -1059,13 +1062,162 @@ def fix_pep585_604(content):
     if has_type_alias_pep:
         content = _fix_type_alias_pep585_604_no_future(content)
 
-    if needs_future:
+    if has_pipe_union:
+        # Instead of adding 'from __future__ import annotations' which may
+        # not work for runtime-evaluated type expressions (TypeAlias, dataclass fields),
+        # directly convert X | Y to Union[X, Y] in type annotation contexts.
+        content = _fix_pipe_union_direct(content)
+    elif needs_future:
         lines = content.split("\n")
         insert_pos = _find_future_import_position(lines)
         lines.insert(insert_pos, "from __future__ import annotations")
         content = "\n".join(lines)
 
     return content
+
+
+def _fix_pipe_union_direct(content):
+    """Directly convert X | Y type union syntax to Union[X, Y] in source code.
+
+    This is used instead of adding 'from __future__ import annotations' when
+    the file contains pipe union syntax that may be evaluated at runtime
+    (e.g., TypeAlias assignments, dataclass fields, default factory types).
+
+    Strategy: line-by-line processing, replacing | between type expressions
+    with Union[...], using heuristic detection to distinguish type unions
+    from bitwise OR operations.
+    """
+    if '|' not in content:
+        return content
+
+    lines = content.split('\n')
+    new_lines = []
+    needs_union_import = False
+
+    for line in lines:
+        stripped = line.lstrip()
+
+        # Skip comments, docstrings, empty lines
+        if stripped.startswith('#') or stripped.startswith('"""') or stripped.startswith("'''") or stripped == '':
+            new_lines.append(line)
+            continue
+
+        # Only process lines that contain | and are likely type annotation contexts
+        if '|' not in line:
+            new_lines.append(line)
+            continue
+
+        # Check if this line is in a type annotation context
+        # Type annotations appear after:  param: Type, -> Type, var: Type, inside []
+        # Heuristic: line contains ':', '->', or is inside brackets, and | is
+        # between type-like identifiers (None, builtins, capitalized names)
+        if _line_has_type_union(line):
+            new_line = _replace_type_unions_in_line(line)
+            if new_line != line:
+                needs_union_import = True
+            new_lines.append(new_line)
+        else:
+            new_lines.append(line)
+
+    if needs_union_import:
+        content = '\n'.join(new_lines)
+        content = _ensure_typing_import(content, 'Union')
+    else:
+        content = '\n'.join(new_lines)
+
+    return content
+
+
+def _line_has_type_union(line):
+    """Check if a line likely contains a type union (X | Y) rather than bitwise OR."""
+    stripped = line.lstrip()
+
+    # Skip string literals and comments
+    if stripped.startswith('#'):
+        return False
+
+    # Lines with type annotation markers are strong indicators
+    has_annotation_marker = bool(re.search(r':\s|->\s', line))
+
+    # Check for | between type-like identifiers
+    # Type-like: None, builtins (int, str, etc.), capitalized names, generic types
+    type_keywords = {
+        'None', 'int', 'str', 'bool', 'float', 'bytes', 'Any',
+        'dict', 'list', 'set', 'tuple', 'frozenset', 'type',
+        'Callable', 'Sequence', 'Mapping', 'Iterator',
+        'Generator', 'AsyncIterator', 'AsyncGenerator',
+        'Awaitable', 'Coroutine', 'Union', 'Optional',
+        'Literal', 'ForwardRef', 'Pattern', 'Match',
+    }
+
+    # Find all X | Y patterns and check if they look like type unions
+    pipe_matches = list(re.finditer(r'(\w+(?:\.\w+)*(?:\[[^\]]*\])?)\s*\|\s*(\w+(?:\.\w+)*(?:\[[^\]]*\])?)', line))
+    if not pipe_matches:
+        return False
+
+    for m in pipe_matches:
+        left = m.group(1).split('[')[0].split('.')[-1]
+        right = m.group(2).split('[')[0].split('.')[-1]
+
+        is_type = (left in type_keywords or right in type_keywords or
+                   (left and left[0].isupper()) or (right and right[0].isupper()))
+        if is_type:
+            return True
+
+    # If line has annotation markers and any |, it's likely a type union
+    return has_annotation_marker and bool(re.search(r'\w+\s*\|\s*\w+', line))
+
+
+def _replace_type_unions_in_line(line):
+    """Replace all X | Y type unions in a line with Union[X, Y].
+
+    Uses iterative replacement from innermost to outermost to handle
+    nested unions like A | B | C -> Union[A, Union[B, C]] -> Union[A, B, C].
+    """
+    result = line
+    max_iterations = 50  # Safety limit
+    iteration = 0
+
+    while iteration < max_iterations:
+        iteration += 1
+        # Match type_expr | type_expr where type_expr is an identifier (possibly with dots/generics)
+        # or Union[...] (already converted)
+        simple_type = r'(?:Union\[[^\]]*\]|(?:\w+\.)*\w+(?:\[[^\]]*\])?)'
+        pattern = r'(' + simple_type + r')\s*\|\s*(' + simple_type + r')'
+
+        new_result = re.sub(pattern, _union_replacer, result, count=1)
+        if new_result == result:
+            break
+        result = new_result
+
+    return result
+
+
+def _union_replacer(m):
+    """Replacement function for type union regex matches."""
+    left = m.group(1)
+    right = m.group(2)
+
+    # If both sides look like types (not bitwise OR), convert to Union
+    type_keywords = {
+        'None', 'int', 'str', 'bool', 'float', 'bytes', 'Any',
+        'dict', 'list', 'set', 'tuple', 'frozenset', 'type',
+        'Callable', 'Sequence', 'Mapping', 'Iterator',
+        'Generator', 'AsyncIterator', 'AsyncGenerator',
+        'Awaitable', 'Coroutine', 'Union', 'Optional',
+        'Literal', 'ForwardRef', 'Pattern', 'Match',
+    }
+
+    left_name = left.split('[')[0].split('.')[-1]
+    right_name = right.split('[')[0].split('.')[-1]
+
+    is_type = (left_name in type_keywords or right_name in type_keywords or
+               (left_name and left_name[0].isupper()) or (right_name and right_name[0].isupper()) or
+               left.startswith('Union[') or right.startswith('Union['))
+
+    if is_type:
+        return f'Union[{left}, {right}]'
+    return m.group(0)
 
 
 def _fix_type_alias_pep585_604_no_future(content):
@@ -2289,6 +2441,8 @@ def fix_annotated_import(content):
                 else:
                     new_lines.append(line)
             content = '\n'.join(new_lines)
+        # Also handle multi-line parenthesized imports that may still contain Annotated
+        content = _fix_annotated_multiline_import(content)
         return content
 
     if "from typing import" not in content and "from typing_extensions import" not in content:
@@ -2298,6 +2452,13 @@ def fix_annotated_import(content):
                 r"\1try:\n    from typing import Annotated\nexcept ImportError:\n    from typing_extensions import Annotated\n",
                 content,
             )
+        return content
+
+    # First try multi-line parenthesized import: from typing import (\n    Annotated,\n    ...\n)
+    content = _fix_annotated_multiline_import(content)
+
+    # If Annotated was removed by multiline handler, we're done
+    if not re.search(r"^from typing import.*\bAnnotated\b", content, re.MULTILINE):
         return content
 
     annotated_m = None
@@ -2331,6 +2492,68 @@ def fix_annotated_import(content):
         content = content.replace(old_line + "\n", annotated_block + "\n", 1)
         if old_line in content:
             content = content.replace(old_line, annotated_block, 1)
+
+    return content
+
+
+def _fix_annotated_multiline_import(content):
+    """Handle multi-line parenthesized imports like:
+    from typing import (
+        Annotated,
+        Any,
+        Union,
+    )
+    Move Annotated to typing_extensions import.
+    """
+    if 'Annotated' not in content:
+        return content
+
+    # Find multi-line from typing import ( ... ) blocks containing Annotated
+    pattern = r'^(\s*)from typing import\s*\(([^)]*)\)'
+    match = re.search(pattern, content, re.MULTILINE | re.DOTALL)
+    if not match:
+        return content
+
+    indent = match.group(1)
+    imports_block = match.group(2)
+
+    if 'Annotated' not in imports_block:
+        return content
+
+    # Parse the import items
+    imports = [item.strip().rstrip(',') for item in imports_block.split('\n') if item.strip() and item.strip() != ',']
+
+    # Separate Annotated from other imports
+    annotated_items = []
+    other_items = []
+    for imp in imports:
+        if imp.startswith('Annotated'):
+            annotated_items.append(imp)
+        elif imp:
+            other_items.append(imp)
+
+    if not annotated_items:
+        return content
+
+    old_block = match.group(0)
+
+    # Build new import lines
+    new_lines = []
+    if other_items:
+        # Keep other imports in from typing import
+        if len(other_items) == 1:
+            new_lines.append(f'{indent}from typing import {other_items[0]}')
+        else:
+            new_lines.append(f'{indent}from typing import (')
+            for item in other_items:
+                new_lines.append(f'{indent}    {item},')
+            new_lines.append(f'{indent})')
+
+    # Add typing_extensions import for Annotated
+    new_lines.append(f'{indent}from typing_extensions import {", ".join(annotated_items)}')
+
+    new_block = '\n'.join(new_lines)
+    content = content.replace(old_block, new_block, 1)
 
     return content
 
@@ -2893,11 +3116,12 @@ def fix_zip_strict(content):
         if args_only.endswith(','):
             args_only = args_only[:-1].rstrip()
         if strict_val == 'False':
+            # strict=False is the default behavior, just remove the parameter
             if args_only:
-                needs_compat = False
                 return f"{prefix}zip({args_only})"
             return m.group(0)
         else:
+            # strict=True needs a compat function
             needs_compat = True
             return f"{prefix}_zip_strict({args_only})"
 
@@ -4454,10 +4678,21 @@ def fix_cmake_python_version(root):
 
 
 def fix_collections_abc_callable_subscript(content):
+    """Fix collections.abc types used with subscript that are not subscriptable
+    on Python 3.8. Moves them from collections.abc import to typing import.
+
+    Handles: Callable, Awaitable, Generator, Coroutine, AsyncGenerator,
+    AsyncIterator, AsyncIterable, and other subscriptable abc types.
+    """
     if 'from collections.abc import' not in content:
         return content
-    if 'Callable' not in content:
-        return content
+
+    # Types that are in collections.abc but need to be imported from typing
+    # for subscript support on Python 3.8
+    subscriptable_abc_types = {
+        'Callable', 'Awaitable', 'Generator', 'Coroutine',
+        'AsyncGenerator', 'AsyncIterator', 'AsyncIterable',
+    }
 
     m = re.search(r'from collections\.abc import (.+)', content)
     if not m:
@@ -4466,45 +4701,54 @@ def fix_collections_abc_callable_subscript(content):
     imports_str = m.group(1)
     imports = [i.strip() for i in imports_str.split(',')]
 
-    if 'Callable' not in imports:
+    # Find which subscriptable types are imported
+    imported_subscriptable = [t for t in imports if t in subscriptable_abc_types]
+    if not imported_subscriptable:
         return content
 
     has_future = 'from __future__ import annotations' in content
 
-    needs_fix = False
-    if 'TypeVar' in content and re.search(r'bound\s*=\s*Callable\[', content):
-        needs_fix = True
-    elif not has_future and 'Callable[' in content:
-        needs_fix = True
+    # Check which ones actually need fixing (used with subscript in non-annotation context)
+    needs_moving = set()
+    for abc_type in imported_subscriptable:
+        # With __future__, annotations are strings so subscript is OK
+        # But TypeVar bound= and other runtime contexts still need fixing
+        if re.search(rf'bound\s*=\s*{abc_type}\[', content):
+            needs_moving.add(abc_type)
+        elif not has_future and re.search(rf'\b{abc_type}\s*\[', content):
+            needs_moving.add(abc_type)
 
-    if not needs_fix:
+    if not needs_moving:
         return content
 
-    other_imports = [i for i in imports if i != 'Callable']
+    other_imports = [i for i in imports if i not in needs_moving]
 
-    if other_imports:
-        new_abc_line = f'from collections.abc import {", ".join(other_imports)}'
-    else:
-        new_abc_line = None
-
+    # Add to typing imports
     typing_match = re.search(r'from typing import (.+)', content)
     if typing_match:
         existing = typing_match.group(1)
         existing_items = [i.strip() for i in existing.split(',')]
-        if 'Callable' not in existing_items:
-            existing_items.append('Callable')
+        for t in sorted(needs_moving):
+            if t not in existing_items:
+                existing_items.append(t)
         new_typing_line = f'from typing import {", ".join(existing_items)}'
         content = content.replace(typing_match.group(0), new_typing_line)
     else:
-        insert_after = new_abc_line or m.group(0)
-        content = content.replace(m.group(0), insert_after + '\nfrom typing import Callable')
-        if new_abc_line and new_abc_line != m.group(0):
-            pass
+        typing_import_line = f'from typing import {", ".join(sorted(needs_moving))}'
+        if other_imports:
+            content = content.replace(
+                f'from collections.abc import {imports_str}',
+                f'from collections.abc import {", ".join(other_imports)}\n{typing_import_line}'
+            )
+        else:
+            content = content.replace(m.group(0), typing_import_line)
+        return content
 
+    # Update or remove the collections.abc import line
     if other_imports:
         content = content.replace(
             f'from collections.abc import {imports_str}',
-            new_abc_line
+            f'from collections.abc import {", ".join(other_imports)}'
         )
     else:
         content = content.replace(m.group(0) + '\n', '')
@@ -5664,16 +5908,21 @@ def fix_runtime_type_union(content):
 def fix_collections_abc_iterator_subscript(content):
     if 'from collections.abc import' not in content:
         return content
-    if not re.search(r'\b(Iterator|Iterable|Sequence|Mapping|Callable)\s*\[', content):
+    # Check for any collections.abc type used with subscript
+    if not re.search(r'\b(Iterator|Iterable|Sequence|Mapping|Callable|Awaitable|Generator|Coroutine|AsyncIterator|AsyncIterable|AsyncGenerator|Collection|Container|Reversible|MutableSequence|MutableMapping|Set|MutableSet|ByteString)\s*\[', content):
         return content
 
     has_future = 'from __future__ import annotations' in content
     if has_future:
         return content
 
+    # All collections.abc types that have typing equivalents and are subscriptable
     abc_types = {'Iterator', 'Iterable', 'Sequence', 'MutableSequence',
                  'Mapping', 'MutableMapping', 'Set', 'MutableSet',
-                 'Callable', 'Container', 'Collection', 'Reversible'}
+                 'Callable', 'Container', 'Collection', 'Reversible',
+                 'Awaitable', 'Generator', 'Coroutine',
+                 'AsyncIterator', 'AsyncIterable', 'AsyncGenerator',
+                 'ByteString'}
 
     needs_fix = False
     m = re.search(r'from collections\.abc import (.+)', content)
@@ -6135,6 +6384,405 @@ def fix_invalid_escape_sequences(content):
     return '\n'.join(new_lines)
 
 
+def fix_inspect_signature_eval_str(content):
+    """Fix inspect.signature(call, eval_str=True) which is Python 3.10+.
+
+    Wraps the call with a version check:
+        if sys.version_info >= (3, 10):
+            signature = inspect.signature(call, eval_str=True)
+        else:
+            signature = inspect.signature(call)
+    """
+    if 'eval_str' not in content:
+        return content
+    if 'inspect.signature' not in content and 'inspect.Signature' not in content:
+        return content
+    # Don't fix if already has version check for eval_str
+    if re.search(r'version_info.*3,\s*10.*eval_str', content):
+        return content
+    if re.search(r'hasattr\(inspect.*eval_str', content):
+        return content
+    # Don't fix if it's in a try/except or already compat
+    if '_signature_compat' in content or 'eval_str_compat' in content:
+        return content
+
+    needs_sys_import = 'sys' not in content.split('\n')[0:min(50, len(content.split('\n')))]
+
+    lines = content.split('\n')
+    new_lines = []
+    needs_fix = False
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        # Match: signature = inspect.signature(call, eval_str=True)
+        m = re.match(r'^(\s*)(\w+)\s*=\s*inspect\.signature\(([^)]*),\s*eval_str\s*=\s*True\s*\)\s*$', line)
+        if m:
+            indent = m.group(1)
+            var = m.group(2)
+            call_arg = m.group(3).strip()
+            new_lines.append(f'{indent}if sys.version_info >= (3, 10):')
+            new_lines.append(f'{indent}    {var} = inspect.signature({call_arg}, eval_str=True)')
+            new_lines.append(f'{indent}else:')
+            new_lines.append(f'{indent}    {var} = inspect.signature({call_arg})')
+            needs_fix = True
+            i += 1
+            continue
+
+        # Match: inspect.signature(call, eval_str=True) as part of a larger expression
+        if 'inspect.signature(' in line and 'eval_str=True' in line:
+            # More complex case - wrap the entire line
+            stripped = line.strip()
+            # Simple replacement: remove eval_str=True from the call
+            new_line = re.sub(r',\s*eval_str\s*=\s*True', '', line)
+            # Add version guard before this line
+            indent = line[:len(line) - len(line.lstrip())]
+            new_lines.append(f'{indent}if sys.version_info >= (3, 10):')
+            new_lines.append(f'{indent}    {line.strip()}')
+            new_lines.append(f'{indent}else:')
+            new_lines.append(f'{indent}    {new_line.strip()}')
+            needs_fix = True
+            i += 1
+            continue
+
+        new_lines.append(line)
+        i += 1
+
+    if needs_fix:
+        content = '\n'.join(new_lines)
+        # Ensure sys is imported
+        if 'import sys' not in content:
+            content = re.sub(
+                r'^(import inspect)',
+                r'import sys\n\1',
+                content,
+                count=1
+            )
+    else:
+        content = '\n'.join(new_lines)
+
+    return content
+
+
+def fix_typing_inspection_import(content):
+    """Fix 'from typing_inspection import ...' which is not available on Python 3.8.
+
+    Wraps the import in a try/except block and provides a fallback.
+    """
+    if 'typing_inspection' not in content:
+        return content
+    # Already has try/except for typing_inspection
+    if re.search(r'try:\s*\n\s*from typing_inspection', content):
+        return content
+    if 'except ImportError' in content and 'typing_inspection' in content:
+        return content
+
+    needs_fix = False
+    lines = content.split('\n')
+    new_lines = []
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+        # Match: from typing_inspection.xxx import yyy
+        m = re.match(r'^(\s*)from typing_inspection(\.\w+)* import (.+)$', line)
+        if m:
+            indent = m.group(1)
+            module_path = m.group(2) or ''
+            imports = m.group(3).strip()
+
+            # Parse imported names
+            import_names = [n.strip() for n in imports.split(',')]
+
+            new_lines.append(f'{indent}try:')
+            new_lines.append(f'{indent}    from typing_inspection{module_path} import {imports}')
+            new_lines.append(f'{indent}except ImportError:')
+            new_lines.append(f'{indent}    # typing_inspection is not available on Python 3.8')
+
+            # For each imported name, provide a fallback
+            for name in import_names:
+                name_base = name.split(' as ')[0].strip()
+                name_alias = name.split(' as ')[1].strip() if ' as ' in name else name_base
+
+                if name_base == 'is_typealiastype':
+                    # PEP 695 type aliases are not supported on Python 3.8 anyway
+                    new_lines.append(f'{indent}    def {name_alias}(obj):')
+                    new_lines.append(f'{indent}        return False')
+                else:
+                    # Generic fallback: set to None
+                    new_lines.append(f'{indent}    {name_alias} = None')
+
+            needs_fix = True
+            i += 1
+            continue
+
+        # Match: import typing_inspection
+        m2 = re.match(r'^(\s*)import typing_inspection\s*$', line)
+        if m2:
+            indent = m2.group(1)
+            new_lines.append(f'{indent}try:')
+            new_lines.append(f'{indent}    import typing_inspection')
+            new_lines.append(f'{indent}except ImportError:')
+            new_lines.append(f'{indent}    typing_inspection = None')
+            needs_fix = True
+            i += 1
+            continue
+
+        new_lines.append(line)
+        i += 1
+
+    return '\n'.join(new_lines) if needs_fix else content
+
+
+def fix_contextlib_async_context_manager_subscript(content):
+    """Fix contextlib.AbstractAsyncContextManager[_T] which is not subscriptable
+    on Python 3.8. Replace with typing.AsyncContextManager[_T].
+
+    Also handles contextlib.AbstractContextManager[_T] -> typing.ContextManager[_T].
+    """
+    if 'contextlib' not in content:
+        return content
+    if not re.search(r'AbstractAsyncContextManager|AbstractContextManager', content):
+        return content
+
+    has_future = 'from __future__ import annotations' in content
+    needs_fix = False
+    needs_async = False
+    needs_sync = False
+
+    # Check if AbstractAsyncContextManager or AbstractContextManager is used with subscript
+    if not has_future:
+        if re.search(r'AbstractAsyncContextManager\s*\[', content):
+            needs_async = True
+            needs_fix = True
+        if re.search(r'AbstractContextManager\s*\[', content):
+            needs_sync = True
+            needs_fix = True
+    else:
+        # Even with __future__, if used in runtime contexts (like base classes),
+        # we still need to fix
+        if re.search(r'class\s+\w+\(.*AbstractAsyncContextManager\[', content):
+            needs_async = True
+            needs_fix = True
+        if re.search(r'class\s+\w+\(.*AbstractContextManager\[', content):
+            needs_sync = True
+            needs_fix = True
+
+    if not needs_fix:
+        return content
+
+    # Replace AbstractAsyncContextManager with AsyncContextManager from typing
+    if needs_async:
+        content = re.sub(
+            r'\bAbstractAsyncContextManager\b',
+            'AsyncContextManager',
+            content,
+        )
+        # Remove from contextlib import if present
+        content = re.sub(
+            r',\s*AbstractAsyncContextManager',
+            '',
+            content,
+        )
+        content = re.sub(
+            r'AbstractAsyncContextManager\s*,\s*',
+            '',
+            content,
+        )
+        content = _ensure_typing_import(content, 'AsyncContextManager')
+
+    if needs_sync:
+        content = re.sub(
+            r'\bAbstractContextManager\b',
+            'ContextManager',
+            content,
+        )
+        content = re.sub(
+            r',\s*AbstractContextManager',
+            '',
+            content,
+        )
+        content = re.sub(
+            r'AbstractContextManager\s*,\s*',
+            '',
+            content,
+        )
+        content = _ensure_typing_import(content, 'ContextManager')
+
+    return content
+
+
+def fix_type_subscript_runtime(content):
+    """Fix type["ClassName"] used in runtime contexts (not annotations).
+
+    In Python 3.8, 'type' is not subscriptable. When used outside of
+    annotations (e.g., as default values, in function bodies), it must
+    be replaced with Type["ClassName"] from typing.
+
+    This specifically targets patterns like:
+        type["BaseModel"]  ->  Type["BaseModel"]
+        type[X] | None     ->  Optional[Type[X]]
+    """
+    if 'type[' not in content:
+        return content
+
+    has_future = 'from __future__ import annotations' in content
+
+    # If __future__ annotations is present, type[...] in annotations is fine,
+    # but we still need to fix it in runtime contexts (non-annotation lines)
+    lines = content.split('\n')
+    new_lines = []
+    needs_type_import = False
+
+    for line in lines:
+        stripped = line.strip()
+
+        # Skip comments and docstrings
+        if stripped.startswith('#') or stripped.startswith('"""') or stripped.startswith("'''"):
+            new_lines.append(line)
+            continue
+
+        if 'type[' not in line:
+            new_lines.append(line)
+            continue
+
+        # Check if this is in an annotation context (safe with __future__)
+        is_annotation = bool(re.search(r':\s.*type\[|->.*type\[', line))
+
+        if has_future and is_annotation:
+            # With __future__, annotations are strings, so type[...] is fine
+            new_lines.append(line)
+            continue
+
+        # Check if it's a standalone type[...] usage (not the builtin 'type' function)
+        # Pattern: type["X"] or type[X] where X is a class name
+        if re.search(r'\btype\s*\[', line):
+            # Replace type[...] with Type[...]
+            new_line = re.sub(r'\btype\[', 'Type[', line)
+            if new_line != line:
+                needs_type_import = True
+                # Also handle type[X] | None -> Optional[Type[X]] or Union[Type[X], None]
+                if '|' in new_line:
+                    new_line = _replace_type_unions_in_line(new_line)
+                new_lines.append(new_line)
+                continue
+
+        new_lines.append(line)
+
+    if needs_type_import:
+        content = '\n'.join(new_lines)
+        content = _ensure_typing_import(content, 'Type')
+    else:
+        content = '\n'.join(new_lines)
+
+    return content
+
+
+def fix_missing_partial_import(content):
+    """Fix usage of 'partial' without importing it from functools.
+
+    Some code uses 'partial' (from functools) without importing it,
+    which works when it's imported elsewhere in the package but fails
+    when the module is loaded independently.
+    """
+    if 'partial' not in content:
+        return content
+    # Already imported
+    if re.search(r'from functools import.*\bpartial\b', content):
+        return content
+    if re.search(r'import functools\b', content):
+        return content
+    # Only fix if partial is actually used as a callable (not just a word)
+    if not re.search(r'\bpartial\s*\(', content):
+        return content
+    # Don't fix if it's a different 'partial' (e.g., partial method)
+    if re.search(r'def partial\b', content):
+        return content
+    # Don't fix if it's in a string or comment only
+    has_real_usage = False
+    for line in content.split('\n'):
+        stripped = line.strip()
+        if stripped.startswith('#') or stripped.startswith('"""') or stripped.startswith("'''"):
+            continue
+        if re.search(r'\bpartial\s*\(', line):
+            has_real_usage = True
+            break
+    if not has_real_usage:
+        return content
+
+    # Add the import
+    lines = content.split('\n')
+    insert_pos = 0
+    for i, line in enumerate(lines):
+        if line.startswith('from ') or line.startswith('import '):
+            insert_pos = i + 1
+        elif line.strip() and not line.startswith('#') and not line.startswith('"""') and not line.startswith("'''"):
+            break
+
+    # Check if there's already a functools import line we can extend
+    functools_match = re.search(r'^from functools import (.+)$', content, re.MULTILINE)
+    if functools_match:
+        existing = functools_match.group(1)
+        items = [x.strip() for x in existing.split(',')]
+        if 'partial' not in items:
+            items.append('partial')
+        content = content.replace(
+            functools_match.group(0),
+            f'from functools import {", ".join(items)}'
+        )
+    else:
+        lines.insert(insert_pos, 'from functools import partial')
+        content = '\n'.join(lines)
+
+    return content
+
+
+def fix_add_future_import(content):
+    """Add 'from __future__ import annotations' to files that use Python 3.9+
+    type syntax (X | Y, list[str], dict[str, int], etc.) but don't have it.
+
+    This is a safety net for files that the other fixers might miss.
+    Only adds it if the file clearly needs it and doesn't already have it.
+    """
+    if 'from __future__ import annotations' in content:
+        return content
+
+    # Check for Python 3.10+ type union syntax in annotations
+    has_pipe_union = False
+    has_pep585 = False
+
+    pep585_types = {'list', 'dict', 'set', 'frozenset', 'tuple', 'type'}
+
+    for line in content.split('\n'):
+        stripped = line.strip()
+        if stripped.startswith('#') or stripped.startswith('"""') or stripped.startswith("'''"):
+            continue
+        if stripped.startswith('from ') or stripped.startswith('import '):
+            continue
+
+        # Check for X | Y in annotation-like contexts
+        if re.search(r'\w+\s*\|\s*\w+', line):
+            if ':' in line or '->' in line:
+                has_pipe_union = True
+
+        # Check for PEP 585 generics in annotation-like contexts
+        for t in pep585_types:
+            if re.search(rf'\b{t}\[', line):
+                if ':' in line or '->' in line:
+                    has_pep585 = True
+
+    if not (has_pipe_union or has_pep585):
+        return content
+
+    # Add the future import
+    lines = content.split('\n')
+    insert_pos = _find_future_import_position(lines)
+    lines.insert(insert_pos, 'from __future__ import annotations')
+    content = '\n'.join(lines)
+
+    return content
+
+
 def fix_missing_operator_before_paren(content):
     r"""Fix cases like 'a**2(b)' where a multiplication operator is missing
     before a parenthesis.  Pattern: identifier/number/closing-bracket followed
@@ -6231,12 +6879,18 @@ def process_file(filepath):
     content = fix_dataclass_field_union(content)
     content = fix_dataclass_kw_only(content)
     content = fix_inspect_get_annotations(content)
+    content = fix_inspect_signature_eval_str(content)
+    content = fix_typing_inspection_import(content)
+    content = fix_contextlib_async_context_manager_subscript(content)
+    content = fix_type_subscript_runtime(content)
+    content = fix_missing_partial_import(content)
     content = fix_type_alias_type(content)
     content = fix_runtime_type_union(content)
     content = fix_collections_abc_iterator_subscript(content)
     content = fix_pep604_non_annotation(content)
     content = fix_duplicate_imports(content)
     content = fix_future_import_position(content)
+    content = fix_add_future_import(content)
 
     if content != original:
         try:
